@@ -1,72 +1,261 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "json"
+require "optparse"
+
 require_relative "../lib/wrangle"
 
-# A deliberately small surface. Wrangle's job is to hand one window to a program; the CLI exists to
-# see what is available and to prove the bridge works, not to drive a session from the shell.
+# A CLI built for someone deciding what to do next — a person at a prompt or an agent in a shell.
+#
+# Each command is its own process, so the session lives in a background server and every command
+# talks to it. Failures are named, exit codes are distinct, and an action always reports what moved.
 module Wrangle
   module CLI
-    USAGE = <<~TEXT
+    OK = 0
+    USAGE = 2
+    STALE = 3        # look again and retry
+    TERMINAL = 4     # the session is over
+    UNAVAILABLE = 5  # no session, or the bridge failed
+
+    USAGE_TEXT = <<~TEXT
       wrangle - hand one Safari window to a program, and no more than that
 
-      Usage:
-        wrangle windows [--titles]   list Safari windows (titles and URLs are opt-in)
-        wrangle displays             list displays in AppleScript window coordinates
-        wrangle observe <window_id>  observe one window once and print what it offers
-        wrangle version
+      One-shot:
+        wrangle windows [--titles]        list Safari windows
+        wrangle displays                  list displays in AppleScript window coordinates
 
-      Wrangle never closes a window it did not open, and never acts on one you did not name.
+      Interactive session (survives between commands):
+        wrangle open <url> [--display N]  open a window Wrangle owns
+        wrangle attach <window_id>        take over a window you already have open
+        wrangle observe [--match RE]      look; lists numbered actions
+        wrangle act <ref> [--text STR]    do one action, and report what changed
+        wrangle text [--match RE]         print the page text
+        wrangle status
+        wrangle close
+
+      Common options: --session NAME (default "default"), --json, --all, --settle SECONDS
+
+      Exit codes: 0 ok, 2 usage, 3 stale (observe and retry), 4 session over, 5 unavailable.
     TEXT
 
     module_function
 
     def run(argv)
-      case argv.first
-      when "windows" then windows(argv.include?("--titles"))
-      when "displays" then displays
-      when "observe" then observe(argv[1])
-      when "version" then puts Wrangle::VERSION
-      when nil, "help", "-h", "--help" then puts USAGE
-      else
-        warn "unknown command: #{argv.first}\n\n#{USAGE}"
-        1
+      command = argv.shift
+      options = parse(argv)
+      case command
+      when "windows" then windows(options)
+      when "displays" then displays(options)
+      when "open" then start({ "url" => argv.first }, options)
+      when "attach" then start({ "window_id" => Integer(argv.first, exception: false) }, options)
+      when "observe" then observe(options)
+      when "act" then act(argv.first, options)
+      when "text" then text(options)
+      when "status" then status(options)
+      when "close" then close(options)
+      when "__serve" then serve(argv)
+      when nil, "help", "-h", "--help" then puts(USAGE_TEXT) || OK
+      when "version" then puts(Wrangle::VERSION) || OK
+      else warn("unknown command: #{command}\n\n#{USAGE_TEXT}") || USAGE
       end
     rescue Wrangle::Error => e
       warn "#{e.class.name.split("::").last}: #{e.message}"
-      1
+      UNAVAILABLE
     end
 
-    def windows(titles)
-      Wrangle::Safari.windows(titles: titles).each do |window|
+    def parse(argv)
+      options = { session: "default", settle: nil, json: false, all: false, match: nil }
+      OptionParser.new do |o|
+        o.on("--session NAME") { |v| options[:session] = v }
+        o.on("--display N", Integer) { |v| options[:display] = v }
+        o.on("--text STR") { |v| options[:text] = v }
+        o.on("--match RE") { |v| options[:match] = v }
+        o.on("--settle S", Float) { |v| options[:settle] = v }
+        o.on("--titles") { options[:titles] = true }
+        o.on("--all") { options[:all] = true }
+        o.on("--json") { options[:json] = true }
+      end.parse!(argv)
+      options
+    end
+
+    def client(options) = SessionClient.new(SessionServer.socket_path(options[:session]))
+
+    # --- one-shot ------------------------------------------------------------------------------
+
+    def windows(options)
+      listed = Wrangle::Safari.windows(titles: options[:titles])
+      return emit(listed) if options[:json]
+
+      listed.each do |window|
         line = format("%8d  display %-4s %d tab%s", window["window_id"], window["display"] || "?",
                       window["tabs"], window["tabs"] == 1 ? "" : "s")
-        line += "  #{window["title"]}" if titles
+        line += "  #{window["title"]}" if options[:titles]
         puts line
       end
-      0
+      OK
     end
 
-    def displays
-      Wrangle::Safari.displays.each_with_index do |display, index|
+    def displays(options)
+      listed = Wrangle::Safari.displays
+      return emit(listed) if options[:json]
+
+      listed.each_with_index do |display, index|
         puts format("%d  x=%-7d y=%-7d %dx%d", index, display["x"], display["y"],
                     display["width"], display["height"])
       end
-      0
+      OK
     end
 
-    def observe(window_id)
-      raise Wrangle::Error, "observe needs a window id (see `wrangle windows`)" unless window_id =~ /\A\d+\z/
+    # --- session -------------------------------------------------------------------------------
 
-      Wrangle::Safari.attach(window_id: Integer(window_id)) do |session|
-        page = session.observe
-        puts "#{page["title"]}  <#{page["url"]}>"
-        puts "fingerprint #{page["fingerprint"][0, 16]}  #{page["actions"].size} actions"
-        page["actions"].each { |action| puts format("  %-7s %s", action["kind"], action["label"]) }
+    def start(target, options)
+      return warn("open needs a url; attach needs a numeric window id") || USAGE if target.values.first.nil?
+
+      socket = SessionServer.socket_path(options[:session])
+      return warn("A session named #{options[:session].inspect} is already running.") || USAGE if
+        SessionClient.new(socket).running?
+
+      spawn_server(socket, target.merge("display" => options[:display]))
+      observe(options)
+    end
+
+    def spawn_server(socket, target)
+      log = File.join(File.dirname(socket), "#{File.basename(socket, ".sock")}.log")
+      FileUtils.mkdir_p(File.dirname(socket))
+      pid = Process.spawn(RbConfig.ruby, __FILE__, "__serve", socket, JSON.generate(target),
+                          out: log, err: log, pgroup: true)
+      Process.detach(pid)
+      await(socket, log)
+    end
+
+    def await(socket, log)
+      probe = SessionClient.new(socket)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 30
+      until probe.running?
+        if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+          raise Wrangle::Error, "The session did not start. Last output:\n#{tail(log)}"
+        end
+
+        sleep 0.1
       end
-      0
+    end
+
+    def tail(log) = File.exist?(log) ? File.readlines(log).last(12).join : "(no output)"
+
+    def serve(argv)
+      SessionServer.run(argv[0], JSON.parse(argv[1]))
+      OK
+    end
+
+    def observe(options)
+      request(options, "observe", settle: options[:settle] || 0.0)
+    end
+
+    def act(ref, options)
+      return warn("act needs an action number from the last observation") || USAGE unless ref =~ /\A\d+\z/
+
+      request(options, "act", ref: Integer(ref), text: options[:text], settle: options[:settle] || 3.0)
+    end
+
+    def status(options)
+      reply = client(options).call("status")
+      return emit(reply) if options[:json]
+      return failed(reply, options) unless reply["ok"]
+
+      reply["value"].each { |key, value| puts format("%-14s %s", key, value.inspect) }
+      OK
+    end
+
+    def close(options)
+      reply = client(options).call("close")
+      return emit(reply) if options[:json]
+
+      puts reply["ok"] ? "session closed" : reply["error"]
+      OK
+    end
+
+    def text(options)
+      reply = client(options).call("text")
+      return emit(reply) if options[:json]
+      return failed(reply, options) unless reply["ok"]
+
+      body = reply["value"]["text"].split("\n")
+      body = body.grep(Regexp.new(options[:match], Regexp::IGNORECASE)) if options[:match]
+      puts body
+      OK
+    end
+
+    def request(options, op, **params)
+      reply = client(options).call(op, **params)
+      return emit(reply) if options[:json]
+      return failed(reply, options) unless reply["ok"]
+
+      report(reply["value"], options)
+      OK
+    end
+
+    # --- output --------------------------------------------------------------------------------
+
+    def report(value, options)
+      puts "acted   #{value["kind"]} #{value["executed"].inspect}" if value["executed"]
+      puts "page    #{value["title"].to_s[0, 70].inspect}  <#{value["url"]}>"
+      puts format("state   %s  scroll %d/%d  %d chars  %d actions", value["fingerprint"],
+                  value["scroll"]["y"], value["scroll"]["height"], value["text_chars"],
+                  value["actions"].size)
+      changes(value["changed"])
+      actions(value["actions"], options)
+    end
+
+    def changes(changed)
+      return unless changed
+
+      if changed["same_page"]
+        puts "changed nothing — the page is byte-identical. Try a different action."
+      else
+        parts = []
+        parts << "url changed" if changed["url_changed"]
+        parts << format("text %+d", changed["text_delta"]) unless changed["text_delta"].zero?
+        parts << format("scroll %+d", changed["scroll_delta"]) unless changed["scroll_delta"].zero?
+        puts "changed #{parts.join(", ")}" unless parts.empty?
+      end
+      show_labels("  appeared", changed["appeared"])
+      show_labels("  gone", changed["disappeared"])
+    end
+
+    def show_labels(prefix, labels)
+      return if labels.nil? || labels.empty?
+
+      puts "#{prefix}    #{labels.map { |l| l[0, 58].inspect }.join(", ")}"
+    end
+
+    def actions(list, options)
+      shown = list
+      shown = shown.select { |a| a["label"] =~ Regexp.new(options[:match], Regexp::IGNORECASE) } if options[:match]
+      limit = options[:all] || options[:match] ? shown.size : 25
+      shown.first(limit).each do |action|
+        value = action["value"] ? "  = #{action["value"][0, 30].inspect}" : ""
+        puts format("  %3d  %-7s %-9s %s%s", action["ref"], action["kind"], action["role"],
+                    action["label"][0, 74], value)
+      end
+      return unless shown.size > limit
+
+      puts "  ... #{shown.size - limit} more (--all, or --match RE to filter)"
+    end
+
+    def failed(reply, options)
+      warn "#{reply["class"]}: #{reply["error"]}"
+      warn "hint: #{reply["hint"]}" if reply["hint"]
+      return TERMINAL if reply["terminal"]
+
+      %w[StalePage ArgumentError].include?(reply["class"]) ? STALE : (options && UNAVAILABLE)
+    end
+
+    def emit(value)
+      puts JSON.pretty_generate(value)
+      value.is_a?(Hash) && value["ok"] == false ? STALE : OK
     end
   end
 end
 
-exit(Wrangle::CLI.run(ARGV) || 0)
+exit(Wrangle::CLI.run(ARGV) || Wrangle::CLI::OK)

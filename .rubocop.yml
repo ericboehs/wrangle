@@ -24,6 +24,8 @@ Metrics/AbcSize:
     - "test/**/*.rb"
 Metrics/CyclomaticComplexity:
   Max: 15
+  Exclude:
+    - "exe/wrangle"
 Metrics/PerceivedComplexity:
   Max: 15
 Metrics/ClassLength:
@@ -43,5 +45,11 @@ Naming/MethodParameterName:
 
 # The CLI formats fixed columns; annotated tokens would only make the format strings harder to read.
 Style/FormatStringToken:
+  Exclude:
+    - "exe/wrangle"
+
+# The CLI is one dispatch surface. Splitting it into modules to satisfy a line count would scatter a
+# command, its output format, and its exit code across files, which is worse for a reader chasing one.
+Metrics/ModuleLength:
   Exclude:
     - "exe/wrangle"

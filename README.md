@@ -170,12 +170,67 @@ $ wrangle windows --titles
 $ wrangle displays
 0  x=0       y=31      1440x2529
 1  x=-1920   y=351     1920x1080
-
-$ wrangle observe 26081
 ```
 
-Deliberately small. Wrangle's job is to hand one window to a program; the CLI is for seeing what is
-available and proving the bridge works.
+## Interactive sessions
+
+A browser session is only useful if it survives between commands, and a shell gives you one process
+per command. `wrangle open` starts a background server holding one window behind a socket in
+`~/.wrangle`, so every later command drives the same page.
+
+```
+$ wrangle open "https://www.google.com/travel/flights?q=Flights+from+OKC+to+DEN" --display 1 --settle 8
+page    "Oklahoma City to Denver | Google Flights"  <https://...>
+state   54da85dcabb5  scroll 0/1623  1218 chars  72 actions
+   13  click   button    1 passenger, change number of passengers.
+
+$ wrangle act 13
+acted   click "1 passenger, change number of passengers."
+changed text -1139
+  appeared    "Add adult", "Add child aged 2 to 11", "Done", "Cancel"
+  gone        "Change ticket type. Round trip", "Where from? Oklahoma City OKC"
+    1  click   button    Add adult
+    5  click   button    Done
+
+$ wrangle act 1
+acted   click "Add adult"
+  appeared    "Remove adult"
+
+$ wrangle text --match 'adult'
+Prices include required taxes + fees for 2 adults.
+
+$ wrangle close
+```
+
+Every action answers the only question that matters next: **what moved?** `"Remove adult"` appearing
+is the proof the count went 1 → 2. When nothing moves, it says so outright — `changed nothing — the
+page is byte-identical` — instead of leaving you to diff two page dumps.
+
+The numbers are refs into the last observation and they shift after every action. Acting on a stale
+one is refused rather than mis-clicked. `--settle N` polls until the page stops changing instead of
+sleeping a guessed interval; without it you will read half-loaded pages and believe them.
+
+| Command | |
+|---|---|
+| `open <url>` / `attach <id>` | start a session; `--display N`, `--session NAME` |
+| `observe` | look; `--match RE`, `--all`, `--settle S` |
+| `act <ref>` | one action; `--text STR`, `--settle S` |
+| `text` | page text; `--match RE` |
+| `status` / `close` | |
+
+Exit codes: `0` ok, `2` usage, `3` stale (observe and retry), `4` the session is over, `5` no
+session. Add `--json` to any command for the raw reply.
+
+## Use it from an AI agent
+
+`skills/wrangle` is an [Agent Skill](https://agentskills.io) teaching the loop above, so an agent
+drives Safari with shell commands and never writes Ruby. For [pi](https://github.com/badlogic/pi):
+
+```bash
+pi package add git:github.com/ericboehs/wrangle
+```
+
+Or point any harness at `skills/wrangle/SKILL.md`.
 
 ## How it works
 

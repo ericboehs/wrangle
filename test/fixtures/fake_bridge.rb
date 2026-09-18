@@ -35,6 +35,8 @@ class Page
   attr_accessor :epoch, :act
   attr_reader :url
 
+  PAGE_HEIGHT = 2400
+
   def initialize(url)
     @url = url
     @epoch = nil
@@ -48,7 +50,7 @@ class Page
   def state
     {
       "url" => @url, "title" => "Forma", "text" => @text,
-      "actions" => ACTIONS.map(&:dup), "scroll" => @scroll,
+      "actions" => ACTIONS.map(&:dup), "scroll" => { "y" => @scroll, "height" => PAGE_HEIGHT },
       "marker" => "m-#{@revision}", "page_key" => PAGE_KEY,
       "guards" => { "1" => "g1-#{@revision}", "2" => "g2", "3" => "g3-#{@revision}" }
     }
@@ -60,7 +62,7 @@ class Page
                      @text = "Find a place to slow down #{text}"
     when "select" then @text = "#{@text} [#{action["value"]}]"
     when "click" then @text = "1 places in #{@filled.empty? ? "nowhere" : @filled}"
-    when "scroll" then @scroll += action["delta"]
+    when "scroll" then @scroll = (@scroll + action["delta"]).clamp(0, PAGE_HEIGHT)
     end
     @revision += 1
   end

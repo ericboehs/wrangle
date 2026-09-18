@@ -1,0 +1,35 @@
+{
+  "name": "wrangle",
+  "version": "0.1.0",
+  "description": "Drive one real Safari window from the shell: open a page, see what it offers, click, type, and read results back.",
+  "license": "MIT",
+  "author": "Eric Boehs",
+  "keywords": [
+    "pi-package",
+    "pi-skill",
+    "pi-coding-agent",
+    "safari",
+    "browser-automation",
+    "apple-events",
+    "macos"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ericboehs/wrangle.git"
+  },
+  "homepage": "https://github.com/ericboehs/wrangle#readme",
+  "bugs": {
+    "url": "https://github.com/ericboehs/wrangle/issues"
+  },
+  "files": [
+    "skills",
+    "README.md",
+    "LICENSE.txt",
+    "CHANGELOG.md"
+  ]
+}

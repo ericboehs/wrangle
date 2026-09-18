@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # Wrangle drives Safari through Apple Events, and every test runs against a fake bridge that
+    # speaks that protocol. macOS is where it has to be green, because macOS is the only place it
+    # runs at all.
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor the gemspec claims, and the current release. A claim nobody tests is a guess.
+        ruby: ["3.2", "3.4"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+
+      - run: bundle exec rake test
+
+      # The injected JavaScript is worth a syntax check of its own: a typo in it fails inside Safari,
+      # where the error surfaces a long way from the cause.
+      - run: bundle exec rake jscheck
+
+  lint:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+
+      # RuboCop is deliberately absent from the Gemfile: it needs a native json build, and a
+      # checkout should not require a compiler. CI has one, so the lint runs here instead. Pinned,
+      # because `NewCops: enable` means an upgrade can fail a build that changed nothing.
+      - run: gem install rubocop -v 1.89.0 --no-document
+      - run: rubocop

@@ -21,13 +21,15 @@ Gem::Specification.new do |spec|
 
   spec.metadata = {
     "homepage_uri" => spec.homepage,
-    "source_code_uri" => spec.homepage,
     "changelog_uri" => "#{spec.homepage}/blob/main/CHANGELOG.md",
     "bug_tracker_uri" => "#{spec.homepage}/issues",
     "rubygems_mfa_required" => "true"
   }
 
-  spec.files = Dir["lib/**/*.rb", "lib/wrangle/js/*.js", "exe/*", "README.md", "LICENSE.txt", "CHANGELOG.md"]
+  # The Agent Skill ships with the gem. It is the file that teaches an agent to drive the CLI rather
+  # than write scripts against it, which is the whole point of installing this, and it is 4KB.
+  spec.files = Dir["lib/**/*.rb", "lib/wrangle/js/*.js", "exe/*", "skills/**/*.md",
+                   "README.md", "LICENSE.txt", "CHANGELOG.md"]
   spec.bindir = "exe"
   spec.executables = ["wrangle"]
   spec.require_paths = ["lib"]

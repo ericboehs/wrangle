@@ -330,7 +330,8 @@ class FakeBridge
     # either. Nothing here can know whether the page was touched.
     when "silent_then_unreadable" then @config["loading_on"] = "probe"
                                        raise Silence
-    # Dispatched, and then the bridge is gone. There is nothing left to ask about it.
+    # Dispatched, and then the bridge is gone. Whether the caller notices that as a dead process or
+    # as a probe it cannot get an answer to is a genuine race between the two, and both are correct.
     when "started_then_dead" then exit!(0)
     else
       page.apply(request["action"], request["text"])
@@ -361,6 +362,12 @@ $stdin.each_line do |line|
     warn "osascript: something went wrong"
   end
   exit 0 if op == "exit" || op == config["die_on"]
+  # A reply from the future: an id nobody has asked for yet. Unlike a late reply this cannot be
+  # discarded as stale, and answering with it would answer a question that was never put.
+  if op == config["wrong_id_on"]
+    puts JSON.generate({ "id" => request["id"] + 1, "ok" => true })
+    next
+  end
   # A reply to a request that was already abandoned, arriving under an id nobody is waiting for.
   puts JSON.generate({ "id" => request["id"] - 1, "ok" => true, "late" => true }) if op == config["late_reply_on"]
   next if op == config["hang_on"]

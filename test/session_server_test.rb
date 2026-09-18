@@ -277,6 +277,38 @@ class SessionServerTest < Minitest::Test
     assert_operator reads - before, :>, 2, "a moving page should be looked at more than twice"
   end
 
+  # The run loop reaches `decide` in process; the CLI reaches it over the socket. They are the same
+  # decision, and the socket is the path a caller stepping through a page by hand actually takes.
+  def test_a_decision_can_be_asked_for_over_the_socket
+    session = dedicated
+    server = Wrangle::SessionServer.new(@socket, {}, session: session,
+                                                     jev: ScriptedJev.new([{ operation: "CLICK",
+                                                                             target: "Find stays",
+                                                                             confidence: 0.9 }]))
+    @thread = Thread.new { server.run }
+    sleep 0.02 until File.socket?(@socket)
+    client = Wrangle::SessionClient.new(@socket)
+    client.call("observe")
+
+    value = client.call("decide", goal: "Press it").fetch("value")
+
+    assert_equal "CLICK", value["operation"]
+    assert_equal "Find stays", value["action"]
+    refute value["executed"], "deciding is not doing"
+  end
+
+  # A poisoned session refuses to close its window, and that refusal is correct — but it must not
+  # take the server down with it or leave the socket behind for the next caller to trip over.
+  def test_a_session_that_refuses_to_close_still_lets_the_server_leave
+    client = serving(close_fails: true)
+    client.call("observe")
+
+    client.call("close")
+    @thread.join(2)
+
+    refute_path_exists @socket
+  end
+
   def test_closing_is_a_reply_before_it_is_a_shutdown
     client = serving
 
@@ -297,7 +329,9 @@ class SessionServerTest < Minitest::Test
 
   def test_a_server_that_hangs_up_without_replying_is_reported_not_silently_nil
     listener = UNIXServer.new(@socket)
-    Thread.new { listener.accept.close }
+    # Reads the request before hanging up. Closing without reading is a different failure — the write
+    # itself gets EPIPE — and both have to end the same way, so the second case follows.
+    Thread.new { listener.accept.then { |c| c.gets and c.close } }
 
     error = assert_raises(Wrangle::BridgeError) { Wrangle::SessionClient.new(@socket).call("status") }
 
@@ -306,8 +340,34 @@ class SessionServerTest < Minitest::Test
     listener&.close
   end
 
+  # The session was there when the connection opened and gone before the request was even read. A
+  # caller should not have to know the difference between that and a reply that never came.
+  def test_a_session_that_dies_before_reading_the_request_is_reported_the_same_way
+    listener = UNIXServer.new(@socket)
+    Thread.new { listener.accept.close }
+
+    error = assert_raises(Wrangle::BridgeError) do
+      10.times { Wrangle::SessionClient.new(@socket).call("status") }
+    end
+
+    assert_match(/closed without replying/, error.message)
+  ensure
+    listener&.close
+  end
+
   def test_running_is_false_for_a_socket_with_nothing_behind_it
     refute_predicate Wrangle::SessionClient.new(File.join(@tmpdir, "nothing.sock")), :running?
+  end
+
+  # A socket file is not a session. Something has to be listening, and it has to answer.
+  def test_running_is_false_for_a_socket_that_does_not_answer
+    listener = UNIXServer.new(@socket)
+    accepting = Thread.new { loop { listener.accept.close } }
+    accepting.report_on_exception = false # It is killed by the ensure below; that is not news.
+
+    refute_predicate Wrangle::SessionClient.new(@socket), :running?
+  ensure
+    listener&.close
   end
 
   def test_running_is_true_once_a_server_answers

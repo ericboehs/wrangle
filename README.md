@@ -452,6 +452,19 @@ checkout should not need a working compiler.
 
 The suite runs against a fake bridge subprocess that speaks the real protocol, so it exercises the
 transport, the scope rules, and all four delivery-resolution outcomes without touching a browser.
+Jev's client runs against a real HTTP server on a real socket for the same reason: everything worth
+checking there — a 429 that has to be retried, a connection that opens and then says nothing — is a
+property of the transport, not of a stub.
+
+```
+COVERAGE=1 rake test                      # per-file lines and branches
+COVERAGE=1 COVERAGE_DETAIL=1 rake test    # and which ones are missing
+```
+
+Coverage is measured with Ruby's own `Coverage` module rather than a gem: adding a dependency to
+check that Wrangle has none would be a strange way to keep the claim. CI enforces a floor of 95% on
+branches as well as lines, because line coverage says very little about a codebase whose main job is
+refusing things — a guard runs on every happy path and never once refuses.
 
 ## License
 

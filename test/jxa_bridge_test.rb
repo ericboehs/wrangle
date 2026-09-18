@@ -198,6 +198,35 @@ class JxaBridgeTest < Minitest::Test
     assert reply.key?("windows"), "the real reply is the one with the answer in it"
   end
 
+  # An id nobody asked for cannot be discarded as stale the way a late one can, and using it would
+  # answer a question that was never put. The bridge is not trustworthy after this.
+  def test_a_reply_under_an_id_nobody_asked_for_is_refused
+    active = started(wrong_id_on: "windows")
+
+    error = assert_raises(Wrangle::BridgeError) { active.request("windows") }
+
+    assert_match(/unexpected response id/, error.message)
+  end
+
+  # A request that gets no answer at all inside its timeout is a timeout, not a hang.
+  def test_a_request_that_is_never_answered_times_out
+    active = started(hang_on: "windows")
+
+    assert_raises(Wrangle::BridgeTimeout) { active.request("windows", timeout: 0.3) }
+  end
+
+  # Once the process behind it has been reaped, every later request says so up front, with its exit
+  # status, instead of discovering it again by writing into a pipe with nothing on the other end.
+  def test_a_bridge_whose_process_has_been_reaped_says_so_up_front
+    active = started(die_on: "windows")
+    assert_raises(Wrangle::BridgeError) { active.request("windows") }
+    sleep 0.05 while active.running? # The waiter thread reaps on its own schedule, not ours.
+
+    error = assert_raises(Wrangle::BridgeError) { active.request("ping") }
+
+    assert_match(/exited with status/, error.message)
+  end
+
   def test_closing_a_bridge_that_was_never_started_is_not_an_error
     idle = bridge
     idle.close

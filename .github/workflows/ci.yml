@@ -25,7 +25,12 @@ jobs:
           ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
 
-      - run: bundle exec rake test
+      # Coverage is measured, and enforced, by Ruby's own Coverage module — no gem, because adding a
+      # dependency to check that Wrangle has none would be a strange way to keep the claim. The floor
+      # is on branches as well as lines: lines alone say almost nothing about a codebase whose whole
+      # job is refusing things. One arm is a genuine race between two correct outcomes, so the floor
+      # sits just under where the suite actually lands rather than pinning it to the good day.
+      - run: COVERAGE=1 COVERAGE_ENFORCE=1 COVERAGE_FLOOR=95 bundle exec rake test
 
       # The injected JavaScript is worth a syntax check of its own: a typo in it fails inside Safari,
       # where the error surfaces a long way from the cause.

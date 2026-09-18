@@ -520,8 +520,8 @@ class SafariTest < Minitest::Test
   end
 
   # The bridge dying mid-action is the same problem arriving by a different route. Whether it is
-  # noticed as a dead process or as a probe that cannot be answered is a race, and deliberately not
-  # asserted; what matters is that both end the same way and neither sends the action again.
+  # noticed as a dead process or as a probe that cannot be answered is a race between the exit and
+  # the reaping, and is deliberately not asserted: both are correct and both end the same way.
   def test_a_bridge_that_dies_mid_action_is_never_asked_to_do_it_again
     session = dedicated(act: "started_then_dead")
     page = session.observe

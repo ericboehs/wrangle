@@ -433,6 +433,11 @@ module Wrangle
       raise BridgeError, "The wrangle session closed without replying" unless reply
 
       JSON.parse(reply)
+    rescue Errno::EPIPE, Errno::ECONNRESET, Errno::ENOTCONN
+      # The session was there when the connection opened and gone before it answered. Same outcome as
+      # a reply that never came, and a caller should not have to know the difference at errno level —
+      # macOS reports this as any of three errnos depending on how far the write got.
+      raise BridgeError, "The wrangle session closed without replying"
     rescue Errno::ENOENT, Errno::ECONNREFUSED
       raise BridgeError, "No wrangle session at #{@socket_path}. Start one with `wrangle open <url>`."
     ensure

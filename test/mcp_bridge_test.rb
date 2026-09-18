@@ -209,6 +209,29 @@ class McpBridgeTest < Minitest::Test
     assert_raises(Wrangle::BridgeError) { made.evaluate(scope, { "op" => "observe" }) }
   end
 
+  # --- reading the stream ---------------------------------------------------------------------------
+
+  # The stream carries more than replies. A notification is not anybody's answer and neither is a
+  # line that does not parse; both are stepped over until the id being waited on turns up.
+  def test_notifications_and_junk_in_the_stream_are_stepped_over
+    made = opened(chatter_before: "evaluate_javascript")
+
+    assert_equal "ok", made.evaluate(scope, { "op" => "observe" })["status"]
+  end
+
+  # What safaridriver says on its way down is the only account of why it went, so it is kept — but
+  # only the tail of it. A driver that chatters must not grow an unbounded transcript in the process
+  # that is reading it.
+  def test_what_safaridriver_complains_about_is_kept_up_to_a_limit
+    made = opened(complains: "safaridriver: no such window", complains_times: 60)
+    made.evaluate(scope, { "op" => "observe" })
+
+    sleep 0.05 until made.stderr.length >= 50
+
+    assert_equal 50, made.stderr.length
+    assert_includes made.stderr.join, "no such window"
+  end
+
   # --- replies that parse but are not results ------------------------------------------------------
 
   def test_a_page_reply_with_no_status_is_not_a_result
@@ -245,6 +268,25 @@ class McpBridgeTest < Minitest::Test
     made.request("open", url: "https://fixture.test/stays")
 
     assert_equal "ok", made.evaluate(scope, { "op" => "observe" })["status"]
+  end
+
+  # And it starts it even when nothing was opened first, because an evaluation is a request like any
+  # other: the server is started by whatever needs it, not by a particular op having gone first.
+  def test_evaluating_starts_the_server_even_when_nothing_opened_it
+    made = bridge
+
+    made.evaluate(scope, { "op" => "observe" })
+
+    assert_equal(1, rpc_calls.count { |call| call["method"] == "initialize" })
+  end
+
+  # Closing a bridge that never started one has no process to shut down, no pipe to drain and no
+  # thread to stop. It must not go looking for any of them.
+  def test_closing_a_bridge_that_never_started_touches_nothing
+    made = bridge
+
+    assert_nil made.close
+    assert_raises(Wrangle::BridgeError) { made.request("ping") }
   end
 
   def test_an_operation_with_no_rule_at_all_is_refused_by_name

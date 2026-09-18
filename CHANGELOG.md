@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- Tests cover 98% of lines and 95% of branches, measured and enforced with Ruby's own `Coverage`
+  module — no coverage gem, since adding a dependency to check that Wrangle has none would undercut
+  the claim. Getting there found three real defects: a client that raised a raw `Errno::EPIPE` when a
+  session died mid-write instead of saying the session had gone, a `--version` flag that did not
+  exist despite the `version` subcommand doing, and a test suite that could reach the real Jev
+  endpoint and spend money whenever a test forgot to pass a fake.
+
 - `wrangle run --goal "..." --execute`: a decision loop driven by Jev, a typed-choice model that
   picks one of the actions Wrangle observed. It never writes text — `--literal LABEL=VALUE` supplies
   it, and a fill with no literal stops and asks.

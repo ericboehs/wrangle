@@ -49,6 +49,16 @@ class FakeMcp
   end
 
   def dispatch(message)
+    # An unsolicited server notification, and a line of prose, arriving in the middle of the stream.
+    # Neither is anybody's reply, and reading either as one would answer the wrong question.
+    if @config["chatter_before"] == message.dig("params", "name")
+      puts JSON.generate({ "jsonrpc" => "2.0", "method" => "notifications/progress" })
+      puts "not json at all"
+      $stdout.flush
+    end
+    # Whatever safaridriver would have said on its way down, as many times as asked.
+    Array.new(@config.fetch("complains_times", 1)) { warn @config["complains"] } if @config["complains"]
+
     case message["method"]
     when "notifications/initialized" then nil
     when "initialize" then handshake(message["id"])

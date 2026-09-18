@@ -17,7 +17,8 @@ module Wrangle
     # multi-city field. Below the floor the run stops and says what it was torn between.
     DEFAULT_CONFIDENCE = 0.5
     # Settling starts impatient: a long poll on every step is what makes a run feel like it is
-    # stalling, and a page that streams content in never goes still anyway.
+    # stalling, and a page that streams content in never goes still anyway. The first attempt does
+    # not wait at all — the settle now runs underneath the Jev request, where it is free.
     STEADY_BUDGET = 0.2
     STEADY_CEILING = 1.2
     MAX_MISSES = 4
@@ -116,8 +117,9 @@ module Wrangle
 
       waited = patience(outcome, tally[:soft])
       tally[:soft] += 1
-      steps.push(looked_again(steps.pop, tally[:soft], waited))
+      began = now
       @session.steady(waited)
+      steps.push(looked_again(steps.pop, tally[:soft], ((now - began) * 1000).round))
       :again
     end
 
@@ -128,13 +130,14 @@ module Wrangle
       began = now
       # When the page proves it is churning faster than a decision can be made, back off instead of
       # spinning — an animating menu will invalidate the target forever at a fixed retry rate.
-      @session.steady(backoff(request.fetch("steady", STEADY_BUDGET).to_f, tally[:missed]))
+      @session.steady(backoff(request["steady"].to_f, tally[:missed]))
+      settled = now
       step = @session.decide(request)
-      steps << step.except("choice")
+      steps << step.except("choice").merge("settle_ms" => ((settled - began) * 1000).round)
       advance(step, request, steps.last, began, tally)
-    rescue StalePage
+    rescue StalePage => e
       tally[:missed] += 1
-      steps << missed_step(tally[:missed], began)
+      steps << missed_step(tally[:missed], began, e)
       :stale
     end
 
@@ -251,15 +254,22 @@ module Wrangle
 
     # A second look is not free and it is not nothing: it explains both the pause and why the run
     # ended up where it did, so it belongs in the transcript rather than being quietly discarded.
+    # The pause is reported as the time actually spent, not the time allowed — a page that goes still
+    # early cuts it short, and a transcript that quoted the budget would overstate every one of them.
     def looked_again(step, look, waited)
-      { "operation" => "RELOOK", "confidence" => step["confidence"],
+      { "operation" => "RELOOK", "confidence" => step["confidence"], "step_ms" => waited,
         "action" => "#{step["operation"] == "HANDOFF" ? step["action"][/\A[^;]+/] : "Not sure yet"}; " \
-                    "waited #{(waited * 1000).round}ms and looked again (#{look})" }
+                    "waited #{waited}ms and looked again (#{look})" }
     end
 
-    def missed_step(missed, began)
+    # Which kind of staleness this was is the whole diagnostic value of the step: a guard that moved,
+    # a document that was replaced, and a target that went behind an overlay are three different
+    # problems, and a transcript that calls them all "the page moved" hides which one is costing the
+    # run its time.
+    def missed_step(missed, began, error)
       @session.observe!
       { "operation" => "RESTALE", "confidence" => 0.0, "step_ms" => ((now - began) * 1000).round,
+        "reason" => error.message.sub(/\.?\s*Observe again\.?\z/, ""),
         "action" => "The page moved while deciding; looked again (#{missed})" }
     end
 
@@ -270,7 +280,17 @@ module Wrangle
 
     def weak?(choice, request) = confidence(choice) < floor_for(choice, request)
     def confidence(choice) = [choice.confidence, choice.target_confidence].compact.min.to_f
-    def backoff(base, missed) = missed.zero? ? base : [base * (2**missed), STEADY_CEILING].min
+
+    # A retry is the page saying it is churning faster than a decision can be made, so back off
+    # rather than spinning: an animating menu or a calendar streaming its prices in will invalidate
+    # the target forever at a fixed retry rate. The first attempt waits only if the caller asked it
+    # to, because the watch during the request has already done the settling for free.
+    def backoff(base, missed)
+      return base if missed.zero?
+
+      [[base, STEADY_BUDGET].max * (2**missed), STEADY_CEILING].min
+    end
+
     def patience(outcome, soft) = [SOFT_SETTLE * (2**soft), outcome == :absent ? BLOCKED_CEILING : STEADY_CEILING].min
     def pct(value) = "#{(value.to_f * 100).round}%"
     def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)

@@ -33,8 +33,27 @@ class SafariTest < Minitest::Test
     assert_equal [true], verified["install"]
     assert_equal [true], verified["act"]
     assert_equal [false], verified["observe"]
-    assert_equal [false], verified["marker"] # freshness for a fill
-    assert_equal [false], verified["guard"]  # freshness for a click
+    assert_equal [false], verified["guard"] # freshness for both the fill and the click
+  end
+
+  # A fill has a target, so it is checked against that target. Falling back to the whole-page marker
+  # compares the title, every word of text, and every action on the page, which rejects a decision
+  # about a search box because a price updated somewhere else.
+  def test_anything_aimed_at_an_element_is_checked_against_that_element
+    session = dedicated
+    page = session.observe
+    session.act(find(page, "Destination"), page, text: "Lisbon")
+
+    assert_equal(%w[install observe guard act], page_ops.map { _1["op"] })
+  end
+
+  # Scrolling has no target, so only the page as a whole can speak for it.
+  def test_an_action_with_no_target_falls_back_to_the_page_marker
+    session = dedicated
+    page = session.observe
+    session.act(find(page, "Scroll down"), page)
+
+    assert_includes page_ops.map { _1["op"] }, "marker"
   end
 
   def test_an_attached_window_is_never_closed_and_is_pinned_to_its_url
@@ -129,6 +148,34 @@ class SafariTest < Minitest::Test
     session = dedicated(act: "blocked")
     page = session.observe
     assert_raises(Wrangle::StalePage) { session.act(find(page, "Find stays"), page) }
+  end
+
+  # --- what moved ----------------------------------------------------------------------------
+
+  # A run spends about a third of a second re-deciding every time a guard rejects one, so which part
+  # of the guard moved is the difference between a fixable cost and a mystery. Before these were told
+  # apart, a query string being rewritten and a document being replaced read as the same line.
+  def test_a_stale_decision_says_which_part_of_the_guard_moved
+    { "origin" => "The document was replaced", "route" => "The page navigated elsewhere",
+      "view" => "The page scrolled or resized", "form" => "A field elsewhere on the page changed",
+      "self" => "The target itself changed", "scope" => "The content around the target changed",
+      "gone" => "The target is gone" }.each do |moved, reason|
+      session = dedicated(guard_moved: moved)
+      page = session.observe
+      error = assert_raises(Wrangle::StalePage) { session.act(find(page, "Find stays"), page) }
+
+      assert_equal "#{reason}. Observe again.", error.message
+    end
+  end
+
+  # The parts are reported outermost first. A replaced document explains every other difference, and
+  # naming an inner one would send whoever reads it looking at the wrong thing.
+  def test_the_outermost_difference_is_the_one_reported
+    session = dedicated(guard_moved: %w[self scope origin])
+    page = session.observe
+    error = assert_raises(Wrangle::StalePage) { session.act(find(page, "Find stays"), page) }
+
+    assert_equal "The document was replaced. Observe again.", error.message
   end
 
   # --- delivery ------------------------------------------------------------------------------

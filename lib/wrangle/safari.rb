@@ -24,6 +24,20 @@ module Wrangle
       "option" => "That option is not selectable on this control"
     }.freeze
     STATE_KEYS = %w[url title text actions scroll marker page_key guards].freeze
+    # Kinds aimed at a particular element, and so checked against that element rather than the page.
+    # Scrolling and waiting have no target, so only the page as a whole can speak for them.
+    GUARDED = %w[click select fill].freeze
+    # The parts of a click's guard, outermost first, and what each one moving means. A decision is
+    # rejected when any of them stops matching, and which one it was decides whether the run should
+    # wait, look again, or give up.
+    MOVED = {
+      "origin" => "The document was replaced",
+      "route" => "The page navigated elsewhere",
+      "view" => "The page scrolled or resized",
+      "form" => "A field elsewhere on the page changed",
+      "self" => "The target itself changed",
+      "scope" => "The content around the target changed"
+    }.freeze
     # Binding a new document and mutating one are verified against Safari; reads rely on the epoch.
     VERIFIED_OPS = %w[install act].freeze
 
@@ -139,20 +153,55 @@ module Wrangle
     end
 
     # Compare an observed decision with current page state, without mutating anything.
-    def fresh?(page, action = nil)
+    def fresh?(page, action = nil) = moved(page, action).nil?
+
+    # Why a decision went stale, or nil if it did not.
+    #
+    # Naming the difference is the difference between a transcript saying the page moved and one
+    # saying what moved, and only the second can be acted on. A calendar streaming its prices in, a
+    # field elsewhere being rewritten by an autocomplete, and a document being replaced all used to
+    # read as the same line.
+    def moved(page, action = nil)
       ensure_open
-      if action.is_a?(Hash) && %w[click select].include?(action["kind"])
-        node = action["node"]
-        return false unless node.is_a?(Integer)
+      # Anything aimed at a node is checked against that node. A fill used to fall through to the
+      # whole-page marker, which compares the document title, every word of text, and the full list
+      # of actions — so any banner, price, or result count arriving anywhere rejected a decision
+      # about a search box that had not moved. The guard is both narrower and more to the point: it
+      # asks whether this field is still this field.
+      unless action.is_a?(Hash) && GUARDED.include?(action["kind"])
+        result = page_request({ "op" => "marker" })
+        return "The page is still loading" unless result["status"] == "ok"
 
-        result = page_request({ "op" => "guard", "node" => node })
-        return false unless result["status"] == "ok"
-
-        return result["guard"] == [page["page_key"], page["guards"][node.to_s]]
+        return result["marker"] == page["marker"] ? nil : "The page changed"
       end
 
-      result = page_request({ "op" => "marker" })
-      result["status"] == "ok" && result["marker"] == page["marker"]
+      node = action["node"]
+      return "The target was never observed" unless node.is_a?(Integer)
+
+      result = page_request({ "op" => "guard", "node" => node })
+      return "The page is still loading" unless result["status"] == "ok"
+
+      difference(result["guard"], [page["page_key"], page["guards"][node.to_s]])
+    end
+
+    # Which part of the guard stopped matching. The parts are checked outermost first, because a
+    # replaced document explains every other difference and reporting the innermost one would send a
+    # reader looking at the wrong thing.
+    def difference(live, observed)
+      return nil if live == observed
+
+      live_key, live_guard = live
+      key, guard = observed
+      return "The target is gone" if live_guard.nil? || guard.nil?
+      return "The page changed" unless [live_key, key, live_guard, guard].all?(Hash)
+
+      part = MOVED.keys.find { |name| (live_key[name] || live_guard[name]) != (key[name] || guard[name]) }
+      MOVED.fetch(part, "The page changed")
+    end
+
+    def refuse_stale(page, observed)
+      why = moved(page, observed)
+      raise StalePage, "#{why}. Observe again." if why
     end
 
     # Execute exactly one observed action in the scoped tab.
@@ -162,7 +211,7 @@ module Wrangle
       kind = observed["kind"]
       validate_action!(observed, kind, text)
 
-      raise StalePage, "Page changed since this decision. Observe again." unless fresh?(page, observed)
+      refuse_stale(page, observed)
 
       if kind == "wait"
         sleep 0.1

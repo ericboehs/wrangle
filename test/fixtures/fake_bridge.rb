@@ -10,7 +10,12 @@
 
 require "json"
 
-PAGE_KEY = "pk-1"
+# The real snapshot labels a page key by what each part proves, and the freshness check names the
+# part that moved. A fake carrying an opaque string would let every stale decision report the same
+# thing and still pass.
+PAGE_KEY = { "doc" => ["t0", "https://fixture.test/stays"], "view" => [0, 0, 1024, 768], "form" => [] }.freeze
+
+def guard_for(value) = { "self" => ["n", "button", value], "scope" => "row #{value}" }
 ACTIONS = [
   { "id" => "a1", "kind" => "fill", "node" => 1, "role" => "textbox", "label" => "Destination" },
   { "id" => "a2", "kind" => "select", "node" => 3, "role" => "combobox", "label" => "Category → Design",
@@ -52,7 +57,8 @@ class Page
       "url" => @url, "title" => "Forma", "text" => @text,
       "actions" => ACTIONS.map(&:dup), "scroll" => { "y" => @scroll, "height" => PAGE_HEIGHT },
       "marker" => "m-#{@revision}", "page_key" => PAGE_KEY,
-      "guards" => { "1" => "g1-#{@revision}", "2" => "g2", "3" => "g3-#{@revision}" }
+      "guards" => { "1" => guard_for("g1-#{@revision}"), "2" => guard_for("g2"),
+                    "3" => guard_for("g3-#{@revision}") }
     }
   end
 
@@ -196,6 +202,25 @@ class FakeBridge
     window
   end
 
+  # A test that wants a stale decision says which part of the guard moved, because the whole point of
+  # the check is that it can tell them apart.
+  def guard_reply(page, node)
+    key = PAGE_KEY.dup
+    guard = page.state["guards"][node.to_s]
+    Array(@config["guard_moved"]).each do |moved|
+      case moved
+      when "origin" then key["origin"] = "t1"
+      when "route" then key["route"] = "https://fixture.test/somewhere-else"
+      when "view" then key["view"] = [0, 400, 1024, 768]
+      when "form" then key["form"] = [[1, "typed", nil, nil, false, false]]
+      when "self" then guard = guard.merge("self" => ["n", "button", "a different label"])
+      when "scope" then guard = guard.merge("scope" => "a different row")
+      when "gone" then guard = nil
+      end
+    end
+    [key, guard]
+  end
+
   def page_request(window, request)
     page = window["page"]
     if request["op"] == "install"
@@ -212,7 +237,7 @@ class FakeBridge
     case request["op"]
     when "observe" then { "status" => "ok", "state" => page.state }
     when "marker" then { "status" => "ok", "marker" => page.state["marker"] }
-    when "guard" then { "status" => "ok", "guard" => [PAGE_KEY, page.state["guards"][request["node"].to_s]] }
+    when "guard" then { "status" => "ok", "guard" => guard_reply(page, request["node"]) }
     when "probe" then { "status" => "ok", "act" => page.act }
     when "act" then act(page, request)
     else raise Refusal.new("bad_request", "Unknown page op #{request["op"].inspect}")

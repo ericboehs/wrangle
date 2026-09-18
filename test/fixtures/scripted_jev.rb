@@ -18,13 +18,18 @@ class ScriptedJev
 
   attr_reader :asked
 
-  def initialize(turns)
+  # `thinks_for` makes the answer take time. The real one takes about 350ms, and the page is watched
+  # while it does; a fixture that answers instantly leaves that window closed and nothing to test.
+  def initialize(turns, thinks_for: 0)
     @turns = turns.map { |turn| turn.is_a?(Turn) ? turn : Turn.new(**turn) }
+    @thinks_for = thinks_for
     @asked = []
   end
 
   def ask(state:, questions:)
     turn = @turns.shift or raise "ScriptedJev ran out of script after #{@asked.length} calls"
+
+    sleep @thinks_for if @thinks_for.positive?
     @asked << { goal: state.dig("instructions", "goal") || questions.dig("operation", "instructions", "goal"),
                 operation: turn.operation }
 

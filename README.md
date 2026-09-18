@@ -329,6 +329,63 @@ A whole-task check at the end of a plan was tried and dropped: asked whether a f
 had been achieved, it scored **lower on runs that succeeded than on runs that failed**. Absence is
 much harder to see than presence, and a check that cannot tell the two apart is worse than none.
 
+### Deciding and waiting at the same time
+
+A decision is made about a snapshot, and the page is free to move while the model is reading it. If
+it does, the guard refuses the action and the whole decision is thrown away. On Google Flights that
+was about a quarter of all decisions.
+
+The obvious answer is to wait for the page to go still *before* asking. That is what `STEADY_BUDGET`
+was for, and it had never once run: the CLI always sent the key, so `fetch("steady", 0.2)` returned
+the `nil` that was there and `nil.to_f` is zero. The backoff after a stale retry was multiplying
+that zero by two. Nothing had waited for a page in months.
+
+Restoring it would have cost roughly what it saved — proving a page is still takes two looks about
+200ms apart, and a decision only takes ~350ms. So the looks happen **underneath** the request
+instead. Jev is asked on one thread while the page is watched on another, and the watching stops at
+the first pair of reads that agree. A quiet page now costs nothing to confirm, and when a decision
+is rejected the fresh read is already in hand, so the retry is one request rather than a request and
+a read.
+
+That left the question of why decisions were being rejected at all, which the transcript could not
+answer because every rejection said the same thing. The guard now reports which of its parts moved:
+
+```
+ 4. RESTALE  The page moved while deciding; looked again   [The target is gone]
+ 7. RESTALE  The page moved while deciding; looked again   [The page's address changed]
+```
+
+The second one was the bug. The guard compared `location.href` byte for byte, and Google Flights
+puts the whole itinerary in a `?tfs=` parameter and rewrites it on every keystroke. Comparing the
+origin and path instead — a real navigation, not a query string — removed that reason entirely. A
+genuine route change still shows up, three times over: the path changes, or the document does, or
+the DOM is rebuilt and the element's own identity changes with it.
+
+A fill was also being checked against the whole-page marker, which compares the title, every word of
+text and every action on the page, so any price or banner arriving anywhere rejected a decision
+about a search box that had not moved. Anything aimed at an element is now checked against that
+element.
+
+Measured on the flights form, against the same task and page:
+
+| | before | after |
+|---|---|---|
+| wall seconds per decision | 1.04 | **0.67** |
+| cost of one rejected decision | 695ms | **428ms** |
+| reading the page, per decision | 120ms | **38ms** |
+| rejected decisions | 27% | 25% |
+
+The rejection *rate* barely moved, and that is the honest result: what remains is the page genuinely
+changing under the decision — an autocomplete list re-rendering, a calendar day growing a price —
+and re-deciding is the right response to both. What got cheaper is being wrong.
+
+One change was tried and reverted. With the watch in place the backoff after a stale retry looked
+redundant, since the page has been settling during the request anyway. Removing it took rejected
+decisions from 4.3 to 7.3 per run and the run got slower, so it stayed.
+
+What is left is mostly Jev itself: about 350ms a call, flat regardless of how much page it is sent,
+and a little over half of a run.
+
 ### Backends
 
 `--backend jxa` (default) drives the running Safari through Apple Events. `--backend mcp` uses

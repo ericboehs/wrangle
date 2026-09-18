@@ -23,8 +23,8 @@ class RunLoopTest < Minitest::Test
     super
   end
 
-  def serving(turns, stale_acts: 0, **config)
-    @jev = ScriptedJev.new(turns)
+  def serving(turns, stale_acts: 0, thinks_for: 0, **config)
+    @jev = ScriptedJev.new(turns, thinks_for: thinks_for)
     session = dedicated(**config)
     session = FlakySession.new(session, stale_acts: stale_acts) if stale_acts.positive?
     server = Wrangle::SessionServer.new(@socket, {}, session: session, jev: @jev)
@@ -290,6 +290,36 @@ class RunLoopTest < Minitest::Test
     assert_equal "HANDOFF", value["stopped"]
     assert_match(/--literal/, value["steps"].last["action"])
     assert_empty executed(value)
+  end
+
+  # --- watching the page while Jev thinks ------------------------------------------------------
+
+  # The settle used to run before the request and the two were paid one after the other, which is
+  # why it was worth skipping and why it was in fact skipped: the default budget was read with
+  # `fetch`, the CLI always sent the key as null, and `nil.to_f` is zero. Nothing waited for a page
+  # for months. Run underneath the request the looks are free, so this asserts they happen at all.
+  def test_the_page_is_watched_while_jev_is_thinking
+    client = serving([{ operation: "CLICK", target: CLICK, confidence: 0.9 },
+                      { operation: "DONE", confidence: 0.9 }], thinks_for: 0.2)
+
+    run_plan(client, plan: ["Press the button"])
+
+    # Two reads per decision at most would be one before and one after; a watched decision reads
+    # while it waits, so the first act is preceded by more reads than the unwatched version made.
+    assert_operator page_ops.count { _1["op"] == "observe" }, :>=, 3
+  end
+
+  # A rejected decision touches nothing, so the read taken while Jev was thinking still describes the
+  # page. Reusing it is what makes a stale step cost one more request instead of a request and a read.
+  def test_a_stale_step_reuses_the_read_taken_while_waiting
+    client = serving([{ operation: "CLICK", target: CLICK, confidence: 0.9 },
+                      { operation: "CLICK", target: CLICK, confidence: 0.9 },
+                      { operation: "DONE", confidence: 0.9 }], stale_acts: 1, thinks_for: 0.2)
+
+    value = run_plan(client, plan: ["Press the button"])
+
+    assert_includes operations(value), "RESTALE"
+    assert_equal 1, executed(value).length
   end
 
   def test_run_refuses_to_touch_the_page_without_execute

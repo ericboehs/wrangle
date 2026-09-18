@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require_relative "fixtures/scripted_jev"
 
 # The interactive layer exists so an agent can notice it was wrong and course-correct. These tests
 # are about that: does a reply say what changed, and does a refusal say what to do about itself.
@@ -30,6 +31,37 @@ class SessionServerTest < Minitest::Test
   def stop_server
     @thread&.kill
     @thread = nil
+  end
+
+  # The seam the run loop drives, without the socket in the way. `decide` watches the page while Jev
+  # thinks and keeps the read; `observe!` may promote it, but only while it still describes the page.
+  def seam(turns, **config)
+    Wrangle::SessionServer.new(@socket, {}, session: dedicated(**config),
+                                            jev: ScriptedJev.new(turns, thinks_for: 0.2))
+  end
+
+  def reads = page_ops.count { _1["op"] == "observe" }
+
+  def test_a_rejected_decision_reuses_the_read_taken_while_jev_was_thinking
+    server = seam([{ operation: "CLICK", target: "Find stays", confidence: 0.9 }])
+    server.decide({ "goal" => "Press it" })
+    taken = reads
+    server.observe!
+
+    assert_equal taken, reads
+  end
+
+  # The one way the watch could report the wrong thing: a read from before an action outliving the
+  # page it was taken from. It is stamped with the action count, so after a mutation it is dropped.
+  def test_a_read_taken_before_an_action_is_never_promoted_after_it
+    server = seam([{ operation: "CLICK", target: "Find stays", confidence: 0.9 }])
+    step = server.decide({ "goal" => "Press it" })
+    server.perform(step.fetch("choice"), nil)
+    taken = reads
+    server.observe!
+
+    assert_equal taken + 1, reads
+    assert_match(/1 places/, server.page["text"])
   end
 
   def test_status_describes_the_window_without_observing_it

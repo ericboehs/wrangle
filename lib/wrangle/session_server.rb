@@ -67,7 +67,7 @@ module Wrangle
       chooser = decider(request)
       started = now
       questions = chooser.questions(page)
-      answer = jev(request).ask(state: chooser.state(page, @history), questions: questions)
+      answer = asked(request, chooser.state(page, @history), questions)
       choice = chooser.resolve(answer, page)
 
       { "operation" => choice.operation, "action" => choice.label, "kind" => choice.action&.fetch("kind"),
@@ -77,20 +77,74 @@ module Wrangle
         "choice" => choice }
     end
 
+    # Asks Jev, and watches the page while it thinks.
+    #
+    # Proving a page has stopped moving takes two looks a couple of hundred milliseconds apart, and
+    # Jev takes about 380ms to answer. Those used to be paid one after the other, which is why the
+    # settle was worth skipping and why it was in fact skipped for months. Run together the looks are
+    # free: they fit inside a wait the step was making anyway.
+    #
+    # None of this changes what the decision is about. The answer belongs to `page`, the snapshot it
+    # was asked about, and the guard at act time still has the last word on whether it may be used.
+    # What the watching buys is a fresh observation sitting ready the moment the answer lands, so a
+    # decision the page outran costs one more request instead of a read on top of it.
+    def asked(request, state, questions)
+      @watched = nil
+      thinking = Thread.new { jev(request).ask(state: state, questions: questions) }
+      thinking.report_on_exception = false
+      watch(thinking)
+      thinking.value
+    ensure
+      thinking&.kill
+    end
+
+    # Stops at the first pair of reads that agree: once the page has held still there is nothing
+    # further to learn, and Apple Events are not free even when nobody is waiting on them.
+    def watch(thinking)
+      seen = @page && @page["fingerprint"]
+      while thinking.alive?
+        sleep(STEADY_POLL)
+        break unless thinking.alive?
+
+        looked = @session.observe
+        # Stamped with the number of actions taken. A read is only ever worth promoting while that
+        # number still holds: after a mutation it describes a page that no longer exists, and the one
+        # way this could report the wrong thing is by outliving the page it was taken from.
+        @watched = [@acted, looked]
+        break if looked["fingerprint"] == seen
+
+        seen = looked["fingerprint"]
+      end
+    rescue Error
+      # A read that fails while the answer is still coming is not this step's problem to solve. The
+      # guard, or the next read, will run into whatever is wrong and report it in its own terms.
+      @watched = nil
+    end
+
     # The run loop decides; this stays the only thing that touches the page, so there is one place to
     # read when asking what Wrangle is allowed to do to a window.
     def perform(choice, text)
       before = @page
+      began = now
       @session.act(choice.action, @page, text: text)
+      acted = now
       @acted += 1
       @page = @session.observe
       changed = before["fingerprint"] != @page["fingerprint"]
       @history << { "action" => choice.label, "kind" => choice.action["kind"], "text" => text,
                     "page_changed" => changed }
-      { "executed" => true, "text" => text, "page_changed" => changed }
+      { "executed" => true, "text" => text, "page_changed" => changed,
+        "act_ms" => ((acted - began) * 1000).round, "read_ms" => ((now - acted) * 1000).round }
     end
 
-    def observe! = @page = @session.observe
+    # Promotes the read taken while Jev was thinking, if nothing has been acted on since. A rejected
+    # decision touches nothing, so that read is the same page a fresh one would return, a poll
+    # sooner. A read from before an action is not, and is dropped rather than reused.
+    def observe!
+      acted, looked = @watched
+      @watched = nil
+      @page = (looked if looked && acted == @acted) || @session.observe
+    end
 
     # A decision about a page that is still rendering is a decision thrown away: Jev answers in
     # ~350ms, and the freshness check then rejects it. Autocomplete menus and calendars settle in far

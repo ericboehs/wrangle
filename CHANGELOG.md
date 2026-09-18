@@ -43,6 +43,25 @@
   spend a leg's allowance, with a separate spin cap for loops making no progress.
 - Waiting is an operation the model can choose rather than a fixed pause, and the settle poll starts
   impatient and backs off only when the page proves it is churning.
+- The page is watched while Jev is thinking rather than before the request, so proving it has gone
+  still is free: it fits inside a wait the step was making anyway. A rejected decision then has a
+  fresh read already in hand and costs one more request instead of a request and a read.
+- Fixed: the settle budget had never applied. The CLI always sent the key, so `fetch("steady", 0.2)`
+  returned the `nil` that was there, `nil.to_f` is zero, and the backoff after a stale retry was
+  multiplying that zero by two. No decision had waited for a page in months.
+- A rejected decision says which part of the guard moved — the document, the route, the viewport, a
+  field elsewhere, the target itself, or the content around it — instead of reporting that something,
+  somewhere, changed.
+- The route comparison drops the query string. Sites rewrite it constantly to hold state (a flights
+  form puts the itinerary in `?tfs=` and rewrites it on every keystroke), and comparing the full URL
+  rejected decisions about controls that had not moved. Removed that rejection reason entirely.
+- A fill is checked against its target like a click, instead of falling back to the whole-page
+  marker, which compares the title, every word of text and every action on the page.
+- On the flights form: **0.67 wall seconds per decision, against 1.04**; a rejected decision costs
+  428ms against 695ms; reading the page costs 38ms per decision against 120ms. The rejection rate
+  barely moved (27% to 25%) — what remains is the page genuinely changing, and re-deciding is the
+  right answer to that. Removing the retry backoff was tried and reverted: rejections went from 4.3
+  to 7.3 a run.
 - Unit tests for the three pieces that had only been covered through the loop: the action space, the
   decider, and the MCP bridge. The bridge's run against a fake `safaridriver --mcp` speaking real
   JSON-RPC over a real pipe, so a silent server, a dead one, and a document that took the installed

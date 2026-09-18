@@ -222,6 +222,45 @@ class RunLoopTest < Minitest::Test
     assert_equal "BLOCKED", value["stopped"]
   end
 
+  # --- claiming to be finished ----------------------------------------------------------------
+
+  # DONE is the model's report on its own work, made from the same look that proposed the actions,
+  # and an Amazon plan reported success with the filter it was asked for never applied. The
+  # verification head asked in the same request has no action to gain by agreeing.
+  def test_a_disputed_done_does_not_end_the_leg
+    client = serving([{ operation: "DONE", confidence: 0.9, met: false, met_confidence: 0.9 },
+                      { operation: "CLICK", target: CLICK, confidence: 0.9 },
+                      { operation: "DONE", confidence: 0.9 }])
+
+    value = run_plan(client, plan: ["Actually do the thing"])
+
+    assert_includes operations(value), "UNPROVEN"
+    assert_equal([CLICK], executed(value).map { _1["action"] })
+    assert_equal "DONE", value["stopped"]
+  end
+
+  # A claim that keeps failing to check out, after the page has been given time to catch up, is a
+  # standoff between the actor and the page that nothing in the loop can settle.
+  def test_a_claim_disputed_to_the_end_hands_back_and_abandons_the_rest_of_the_plan
+    client = serving([{ operation: "DONE", confidence: 0.9, met: false, met_confidence: 0.9 }] * 3)
+
+    value = run_plan(client, plan: ["Claim it", "Never reached"], min_confidence: 0.5)
+
+    assert_equal ["Claim it"], goals(value)
+    assert_equal "HANDOFF", value["stopped"]
+  end
+
+  # A verifier that is merely unsure is noise, not evidence. Only a confident "no" overrules a claim,
+  # for the same reason a low-confidence action is not executed.
+  def test_an_unsure_dispute_does_not_overrule_the_claim
+    client = serving([{ operation: "DONE", confidence: 0.9, met: false, met_confidence: 0.5 }])
+
+    value = run_plan(client, plan: ["Say it is done"], min_confidence: 0.5)
+
+    assert_equal 1, @jev.asked.length
+    assert_equal "DONE", value["stopped"]
+  end
+
   # --- typing --------------------------------------------------------------------------------
 
   def test_a_fill_without_a_supplied_literal_asks_for_one_instead_of_inventing_text

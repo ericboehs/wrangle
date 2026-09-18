@@ -89,8 +89,9 @@ wrangle run --goal "Search flights: from OKC to DEN, depart 2026-10-12, return 2
 
 ### When it hands back to you
 
-The run stops and prints `ask` when Jev is not confident enough, when a fill needs text, or when it
-notices itself circling. **You are the fallback.** Do not just re-run the same goal — look, then either:
+The run stops and prints `ask` when Jev is not confident enough, when a fill needs text, when it
+notices itself circling, or when a leg kept claiming to be finished while the page disagreed.
+**You are the fallback.** Do not just re-run the same goal — look, then either:
 
 1. Re-run with a **narrower goal** naming the next concrete step ("The calendar is open; click
    Thursday, October 15, 2026, then click Done"). This is usually right.
@@ -99,6 +100,13 @@ notices itself circling. **You are the fallback.** Do not just re-run the same g
 
 Narrow goals work far better than one big goal. Drive a form in legs: airports, then dates, then
 passengers, then submit.
+
+A leg only finishes when the page shows it finished. Alongside every decision, Jev is asked
+separately whether the goal's outcome is actually visible, and a confident disagreement keeps the
+leg working — you will see `Said done, but the page does not show ...` in the transcript. So write
+each leg as an **outcome you could see**, not an action you could take: "the results are sorted by
+price, low to high" checks better than "use the sort dropdown". A leg that cannot be seen on the
+page cannot be confirmed, and will be handed back to you.
 
 ## Prefer a deep link over filling a form
 

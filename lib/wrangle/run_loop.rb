@@ -35,6 +35,12 @@ module Wrangle
     # Settling a churning page and waiting for a control to arrive are different kinds of patience.
     # Amazon's filter sidebar has taken over two seconds after its results were already interactive.
     BLOCKED_CEILING = 2.5
+    # A confident disagreement from the verification head outweighs the claim; an unsure one is noise.
+    VERIFY_FLOOR = 0.6
+    # A dispute usually means "not yet" rather than "not ever" — the same thing a BLOCKED usually
+    # means — so it gets the same widening patience before the run gives up on it. Two claims 0.6s
+    # apart handed back a search that had worked and was still painting.
+    MAX_CLAIMS = 3
 
     def initialize(session, request, expect)
       @session = session
@@ -67,13 +73,13 @@ module Wrangle
 
     def goal_step(goal, index) = { "operation" => "GOAL", "action" => goal, "confidence" => 0.0, "index" => index + 1 }
 
-    # The budget counts work done, not attempts made. A stale retry or a second look at a
-    # half-rendered page is overhead, and charging it to the leg means a form
+    # The budget counts work done, not attempts made. A stale retry, a second look at a half-rendered
+    # page, or a claim that did not check out is overhead, and charging it to the leg means a form
     # that churns a little runs out of allowance before it finishes — while a separate spin cap still
     # stops a loop that is making no progress at all.
     def leg(request, budget)
       steps = []
-      tally = { missed: 0, soft: 0, done: 0 }
+      tally = { missed: 0, soft: 0, done: 0, claims: 0 }
       spins = 0
       while tally[:done] < budget && spins < budget * SPIN_ALLOWANCE
         spins += 1
@@ -85,6 +91,15 @@ module Wrangle
         next if look == :again
         break if look == :spent
 
+        # A disputed DONE is not work and does not spend the budget. The leg carries on and looks
+        # again, which is what it would have done had it never claimed to be finished — but not
+        # instantly: "the page has not got there yet" is the commonest true reason for a dispute, and
+        # asking again in the same breath gets the same answer. Amazon's results were mid-load for
+        # both claims, and a search that had plainly worked was handed back.
+        if outcome == :unproven
+          @session.steady(patience(:absent, tally[:claims] - 1))
+          next
+        end
         break if outcome == :stop
 
         tally.merge!(soft: 0, missed: 0, done: tally[:done] + 1)
@@ -142,10 +157,36 @@ module Wrangle
     # remaining leg. So look again at both, then let DONE through and make BLOCKED earn a handoff.
     def stopping(choice, request, record, tally)
       return :absent if unconfirmed_blocked?(choice, request, record, tally)
+
+      disputed = disputed_done(choice, request, record, tally)
+      return disputed if disputed
       return :stop unless weak?(choice, request)
       return :absent if choice.operation == "BLOCKED" && unsure?(choice, request, record)
 
       :soft_done
+    end
+
+    # DONE is the model reporting on its own work, chosen from the same look that proposed the
+    # actions, and it is optimistic: an Amazon plan reported success with the filter it had been
+    # asked for never applied. The verification head asked alongside it has no action to gain by
+    # saying yes, so a confident disagreement is worth more than the claim.
+    #
+    # Returns nil when nothing disputes the claim, :unproven to keep working, or :stop once the
+    # disagreement has repeated — twice is a standoff the loop cannot settle, so it hands back.
+    def disputed_done(choice, request, record, tally)
+      return nil unless choice.operation == "DONE" && choice.disputed?(VERIFY_FLOOR)
+
+      tally[:claims] += 1
+      said = "the page does not show #{request["goal"].to_s.inspect} " \
+             "(#{(choice.met_confidence.to_f * 100).round}% sure)"
+      record["confidence"] = choice.met_confidence
+      if tally[:claims] < MAX_CLAIMS
+        record.merge!("operation" => "UNPROVEN", "action" => "Said done, but #{said}; carrying on")
+        return :unproven
+      end
+
+      record.merge!("operation" => "HANDOFF", "action" => "Said done twice, but #{said}; check it yourself")
+      :stop
     end
 
     # A leg begins the instant the one before it ends, and the action that ended it may have started

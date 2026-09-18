@@ -20,6 +20,12 @@
   weak one gets two further looks with a widening pause before it is believed. A control that has
   not rendered yet is not a dead end, and lowering the floor to help an underconfident click should
   not make it easier to abandon the run.
+- Every request carries a verification question — is this goal's outcome visible on the page? —
+  answered independently of the one choosing actions, and read only to dispute a `DONE`. A confident
+  disagreement keeps the leg working; an unsure one is ignored; one that survives three widening
+  pauses hands back. `DONE` is the model reporting on its own work and it is optimistic: a plan
+  reported success with a requested filter never applied.
+- `UNPROVEN` in the transcript marks a claim that did not check out, and does not spend the budget.
 - A leg that has not acted yet cannot report `BLOCKED` without confirming it, however sure it is.
   A leg starts the instant the last one ends, so it often looks at a document that is still loading,
   and a half-loaded page does not read as ambiguous — it reads as definite, and reads surer the

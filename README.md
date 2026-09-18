@@ -290,7 +290,31 @@ target and typed the origin into Google's "Where else?" multi-city field.
 Stopping gets the floor too, but `DONE` and `BLOCKED` are not symmetric. Inside a plan an uncertain
 `DONE` is cheap to be wrong about — the next leg simply does the work — while an uncertain `BLOCKED`
 abandons every remaining leg. So both get a second look, `DONE` then passes, and `BLOCKED` must earn
-its handoff.
+its handoff. A leg that has not acted yet goes further and confirms a `BLOCKED` however sure it is:
+it started the instant the last leg ended, so it is often reading a page that is still loading, and
+a half-loaded page does not read as ambiguous — it reads as definite, and reads surer on the second
+look.
+
+### Checking its own work
+
+`DONE` is the model reporting on its own work, chosen from the same look that proposed the actions,
+and it is optimistic. An Amazon plan reported success with the filter it had been asked for never
+applied; a flights leg finished a passenger dialog it had not finished.
+
+So every request carries a second question — *is this goal's outcome actually visible on the page?*
+— answered independently of the one choosing actions. It costs no extra round trip, because Jev
+evaluates the heads in parallel, and it has no action to gain by agreeing. A confident `no`
+overrules the claim and the leg carries on working:
+
+```
+ 3. would Said done, but the page does not show "In the left sidebar, click..." (76% sure)
+ 4. did   Apply 4 Stars & Up filter to narrow results          (98% sure/100% target)
+ 5. done  DONE                                                 (79% sure)
+```
+
+An unsure `no` is ignored — a verifier that is merely uncertain is noise, not evidence. A dispute
+that survives three widening pauses is a standoff the loop cannot settle, so it hands back rather
+than working on a goal it cannot confirm.
 
 ### Backends
 

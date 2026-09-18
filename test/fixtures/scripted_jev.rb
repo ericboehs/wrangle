@@ -10,7 +10,11 @@
 class ScriptedJev
   # One scripted decision. `target` is matched against the offered action labels by substring, so a
   # test can say "Find stays" without knowing the generated action id.
-  Turn = Struct.new(:operation, :target, :confidence, :target_confidence, keyword_init: true)
+  # `met` answers the verification head that rides along with every request: true or false for a
+  # definite reading of the page, and a `met_confidence` the loop weighs against its floor. Left nil,
+  # the head is answered YES at full confidence, which disputes nothing.
+  Turn = Struct.new(:operation, :target, :confidence, :target_confidence, :met, :met_confidence,
+                    keyword_init: true)
 
   attr_reader :asked
 
@@ -25,6 +29,10 @@ class ScriptedJev
                 operation: turn.operation }
 
     answers = { "operation" => answer(questions.fetch("operation"), turn.operation, turn.confidence) }
+    if questions.key?("goal_met")
+      met = turn.met.nil? || turn.met
+      answers["goal_met"] = answer(questions.fetch("goal_met"), met ? "YES" : "NO", turn.met_confidence || 0.9)
+    end
     head = "#{turn.operation.downcase}_target"
     if questions.key?(head)
       answers[head] = answer(questions.fetch(head), match(questions.fetch(head), turn.target),

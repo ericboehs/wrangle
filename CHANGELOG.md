@@ -20,6 +20,9 @@
   weak one gets two further looks with a widening pause before it is believed. A control that has
   not rendered yet is not a dead end, and lowering the floor to help an underconfident click should
   not make it easier to abandon the run.
+- The first decision of a leg cannot report `BLOCKED` without one confirming look, however sure it
+  is. A leg starts the instant the last one ends, so it often looks at a document that is still
+  loading, and a half-loaded page does not read as ambiguous — it reads as definite.
 - A second look appears in the transcript as `RELOOK` rather than being silently discarded.
 - A `select` is no longer hit-tested before it runs. Styled dropdowns hide the native control under
   an overlay, which made Amazon's sort permanently unactionable; a select is driven by assigning

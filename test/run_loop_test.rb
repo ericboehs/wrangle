@@ -70,7 +70,8 @@ class RunLoopTest < Minitest::Test
   end
 
   def test_a_leg_that_cannot_finish_stops_the_plan_rather_than_guessing_past_it
-    client = serving([{ operation: "BLOCKED", confidence: 0.9 }])
+    client = serving([{ operation: "BLOCKED", confidence: 0.9 },
+                      { operation: "BLOCKED", confidence: 0.9 }])
 
     value = run_plan(client, plan: ["Impossible leg", "Never reached"])
 
@@ -202,12 +203,28 @@ class RunLoopTest < Minitest::Test
     assert_equal "HANDOFF", value["stopped"], "0.45 clears the caller's floor but not the BLOCKED floor"
   end
 
-  def test_a_confident_blocked_is_reported_as_blocked_without_a_second_look
-    client = serving([{ operation: "BLOCKED", confidence: 0.9 }])
+  # Wikipedia's search link navigates, and the next leg starts while the new document is still
+  # loading: "the search box is not here" was 76% sure and wrong. Confidence does not help, because a
+  # half-loaded page does not look ambiguous, it looks definite. So the first decision of a leg is
+  # confirmed once however sure it is, and only then believed.
+  def test_a_confident_blocked_on_the_first_look_of_a_leg_is_confirmed_before_it_is_believed
+    client = serving([{ operation: "BLOCKED", confidence: 0.9 },
+                      { operation: "BLOCKED", confidence: 0.9 }])
 
     value = run_plan(client, plan: ["Truly stuck"], min_confidence: 0.5)
 
-    assert_equal 1, @jev.asked.length
+    assert_equal 2, @jev.asked.length
+    assert_equal "BLOCKED", value["stopped"]
+  end
+
+  # The confirming look is spent once per leg, not before every stop the leg reports.
+  def test_a_blocked_after_the_leg_has_already_worked_is_taken_at_its_word
+    client = serving([{ operation: "CLICK", target: CLICK, confidence: 0.9 },
+                      { operation: "BLOCKED", confidence: 0.9 }])
+
+    value = run_plan(client, plan: ["Got somewhere, then stuck"], min_confidence: 0.5)
+
+    assert_equal 2, @jev.asked.length
     assert_equal "BLOCKED", value["stopped"]
   end
 

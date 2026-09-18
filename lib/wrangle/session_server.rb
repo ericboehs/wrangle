@@ -369,7 +369,7 @@ module Wrangle
       steady(backoff(request.fetch("steady", STEADY_BUDGET).to_f, tally[:missed]))
       step = decide(request)
       steps << step.except("choice")
-      advance(step, request, steps.last, began)
+      advance(step, request, steps.last, began, tally)
     rescue StalePage
       tally[:missed] += 1
       steps << missed_step(tally[:missed], began)
@@ -402,13 +402,14 @@ module Wrangle
         "action" => "The page moved while deciding; looked again (#{missed})" }
     end
 
-    def advance(step, request, record, began)
+    def advance(step, request, record, began, tally = { done: 1 })
       choice = step.fetch("choice")
       # Stopping gets the floor too, but DONE and BLOCKED are not symmetric. Inside a plan an uncertain
       # DONE is cheap to be wrong about — the next leg simply does the work that was not done — while
       # an uncertain BLOCKED abandons every remaining leg. So look again at both, then let DONE
       # through and make BLOCKED earn a handoff.
       if choice.stop?
+        return :absent if unconfirmed_blocked?(choice, request, record, tally)
         return :stop unless weak?(choice, request)
         return :absent if choice.operation == "BLOCKED" && unsure?(choice, request, record)
 
@@ -453,13 +454,29 @@ module Wrangle
 
     def confidence(choice) = [choice.confidence, choice.target_confidence].compact.min.to_f
 
-    def unsure?(choice, request, record)
-      return false unless weak?(choice, request)
+    # A leg begins the instant the one before it ends, and the action that ended it may have started a
+    # navigation. So the first decision of a leg is looking at the previous page as often as not, and
+    # "the control is not here" is exactly what a half-loaded document looks like — confidently. One
+    # extra look costs ~400ms; believing it costs every remaining leg.
+    def fresh_leg?(tally) = tally[:done].zero? && tally[:soft].to_i.zero?
+
+    def unconfirmed_blocked?(choice, request, record, tally)
+      return false unless choice.operation == "BLOCKED" && fresh_leg?(tally)
+
+      unsure?(choice, request, record, force: true)
+    end
+
+    def unsure?(choice, request, record, force: false)
+      return false unless force || weak?(choice, request)
 
       weakest = confidence(choice)
+      reason = if force && !weak?(choice, request)
+                 "#{choice.label.inspect} on the first look of a leg (#{(weakest * 100).round}% sure)"
+               else
+                 "Not sure enough to act (#{(weakest * 100).round}% on #{choice.label.inspect})"
+               end
       record.merge!("operation" => "HANDOFF", "confidence" => weakest,
-                    "action" => "Not sure enough to act (#{(weakest * 100).round}% on #{choice.label.inspect}); " \
-                                "look at the page and choose")
+                    "action" => "#{reason}; look at the page and choose")
       true
     end
 

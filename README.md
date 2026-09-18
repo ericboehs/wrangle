@@ -1,5 +1,8 @@
 # wrangle
 
+[![CI](https://github.com/ericboehs/wrangle/actions/workflows/ci.yml/badge.svg)](https://github.com/ericboehs/wrangle/actions/workflows/ci.yml)
+[![Gem Version](https://badge.fury.io/rb/wrangle.svg)](https://rubygems.org/gems/wrangle)
+
 **Hand one Safari window to a program, and no more than that.**
 
 Wrangle drives an ordinary Safari window through Apple Events. There is no automation session, no

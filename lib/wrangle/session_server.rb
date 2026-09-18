@@ -32,7 +32,11 @@ module Wrangle
     # one finished — Amazon's filter sidebar hydrates well after its results do. So wait longer and
     # look again before believing a page is a dead end: two further looks with a widening pause,
     # against the one an ordinary low-confidence decision gets.
-    BLOCKED_RELOOKS = 2
+    BLOCKED_RELOOKS = 3
+    # Settling a churning page and waiting for a control to arrive are different kinds of patience.
+    # Amazon's filter sidebar has taken over two seconds after its results were already interactive,
+    # which is far longer than any settle should block a step for.
+    BLOCKED_CEILING = 2.5
     DEFAULT_LEG_STEPS = 8
     STEADY_CEILING = 1.2
     MAX_MISSES = 4
@@ -342,7 +346,7 @@ module Wrangle
           looks = outcome == :absent ? BLOCKED_RELOOKS : MAX_SOFT
           break if tally[:soft] >= looks
 
-          waited = backoff(SOFT_SETTLE, tally[:soft])
+          waited = patience(outcome, tally[:soft])
           tally[:soft] += 1
           steps.push(looked_again(steps.pop, tally[:soft], waited))
           steady(waited)
@@ -454,11 +458,21 @@ module Wrangle
 
     def confidence(choice) = [choice.confidence, choice.target_confidence].compact.min.to_f
 
+    # Settling a churning page and waiting for a control to arrive are different kinds of patience,
+    # so they get different ceilings.
+    def patience(outcome, soft)
+      [SOFT_SETTLE * (2**soft), outcome == :absent ? BLOCKED_CEILING : STEADY_CEILING].min
+    end
+
     # A leg begins the instant the one before it ends, and the action that ended it may have started a
-    # navigation. So the first decision of a leg is looking at the previous page as often as not, and
-    # "the control is not here" is exactly what a half-loaded document looks like — confidently. One
-    # extra look costs ~400ms; believing it costs every remaining leg.
-    def fresh_leg?(tally) = tally[:done].zero? && tally[:soft].to_i.zero?
+    # navigation. So the first decisions of a leg are looking at the previous page as often as not,
+    # and "the control is not here" is exactly what a half-loaded document looks like.
+    #
+    # Confidence cannot gate this. Looking again at a page whose sidebar still has not arrived makes
+    # the model surer of the absence, not less — 43% then 76%, both wrong. What makes a BLOCKED cheap
+    # to disbelieve is that the leg has not done anything yet: there is nothing to undo, and nothing
+    # to lose but the wait.
+    def fresh_leg?(tally) = tally[:done].zero? && tally[:soft].to_i < BLOCKED_RELOOKS
 
     def unconfirmed_blocked?(choice, request, record, tally)
       return false unless choice.operation == "BLOCKED" && fresh_leg?(tally)
@@ -471,7 +485,7 @@ module Wrangle
 
       weakest = confidence(choice)
       reason = if force && !weak?(choice, request)
-                 "#{choice.label.inspect} on the first look of a leg (#{(weakest * 100).round}% sure)"
+                 "#{choice.label.inspect} on a leg that has not acted yet (#{(weakest * 100).round}% sure)"
                else
                  "Not sure enough to act (#{(weakest * 100).round}% on #{choice.label.inspect})"
                end

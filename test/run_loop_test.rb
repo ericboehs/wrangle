@@ -70,8 +70,7 @@ class RunLoopTest < Minitest::Test
   end
 
   def test_a_leg_that_cannot_finish_stops_the_plan_rather_than_guessing_past_it
-    client = serving([{ operation: "BLOCKED", confidence: 0.9 },
-                      { operation: "BLOCKED", confidence: 0.9 }])
+    client = serving([{ operation: "BLOCKED", confidence: 0.9 }] * 4)
 
     value = run_plan(client, plan: ["Impossible leg", "Never reached"])
 
@@ -165,15 +164,13 @@ class RunLoopTest < Minitest::Test
   end
 
   def test_an_uncertain_blocked_hands_back_and_abandons_the_rest_of_the_plan
-    client = serving([{ operation: "BLOCKED", confidence: 0.3 },
-                      { operation: "BLOCKED", confidence: 0.3 },
-                      { operation: "BLOCKED", confidence: 0.3 }])
+    client = serving([{ operation: "BLOCKED", confidence: 0.3 }] * 4)
 
     value = run_plan(client, plan: ["Might be stuck", "Never reached"], min_confidence: 0.5)
 
     assert_equal ["Might be stuck"], goals(value)
     assert_equal "HANDOFF", value["stopped"]
-    assert_equal 3, @jev.asked.length, "a weak BLOCKED should be looked at again before it is believed"
+    assert_equal 4, @jev.asked.length, "a weak BLOCKED should be looked at again before it is believed"
   end
 
   # Amazon's filter sidebar renders after its results do, and inside a plan the next leg starts
@@ -194,9 +191,7 @@ class RunLoopTest < Minitest::Test
   # A floor low enough to let an underconfident click through must not also lower the bar for the one
   # decision that throws away every remaining leg.
   def test_a_low_floor_does_not_make_it_easier_to_abandon_the_run
-    client = serving([{ operation: "BLOCKED", confidence: 0.45 },
-                      { operation: "BLOCKED", confidence: 0.45 },
-                      { operation: "BLOCKED", confidence: 0.45 }])
+    client = serving([{ operation: "BLOCKED", confidence: 0.45 }] * 4)
 
     value = run_plan(client, plan: ["Might be stuck", "Never reached"], min_confidence: 0.4)
 
@@ -205,15 +200,14 @@ class RunLoopTest < Minitest::Test
 
   # Wikipedia's search link navigates, and the next leg starts while the new document is still
   # loading: "the search box is not here" was 76% sure and wrong. Confidence does not help, because a
-  # half-loaded page does not look ambiguous, it looks definite. So the first decision of a leg is
-  # confirmed once however sure it is, and only then believed.
-  def test_a_confident_blocked_on_the_first_look_of_a_leg_is_confirmed_before_it_is_believed
-    client = serving([{ operation: "BLOCKED", confidence: 0.9 },
-                      { operation: "BLOCKED", confidence: 0.9 }])
+  # half-loaded page does not look ambiguous, it looks definite — and looking again makes the model
+  # surer, not less. So a leg that has not acted yet confirms a BLOCKED however sure it is.
+  def test_a_confident_blocked_on_a_leg_that_has_not_acted_is_confirmed_before_it_is_believed
+    client = serving([{ operation: "BLOCKED", confidence: 0.9 }] * 4)
 
     value = run_plan(client, plan: ["Truly stuck"], min_confidence: 0.5)
 
-    assert_equal 2, @jev.asked.length
+    assert_equal 4, @jev.asked.length
     assert_equal "BLOCKED", value["stopped"]
   end
 

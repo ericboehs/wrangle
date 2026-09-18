@@ -114,6 +114,11 @@ module Wrangle
       refusal(e.class.name.split("::").last, e.message, terminal: e.is_a?(ScopeLost) || e.is_a?(DeliveryUnknown))
     rescue ArgumentError => e
       refusal("ArgumentError", e.message, terminal: false)
+    rescue StandardError => e
+      # A bug is still a reply. The client is blocked on a socket read, so a server that dies here
+      # hangs the caller forever instead of telling it anything — the session is suspect afterwards,
+      # so this is terminal, but it is reported rather than silently fatal.
+      refusal(e.class.name, "internal error: #{e.message} (#{e.backtrace&.first})", terminal: true)
     end
 
     def handle(request)

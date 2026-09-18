@@ -16,6 +16,13 @@ module Wrangle
     MAX_TEXT = 2000
     SETTLE_SECONDS = 5
     ACTION_KINDS = %w[click fill select scroll wait].freeze
+    BLOCKED = {
+      "target" => "Target is gone, disabled, or no longer visible",
+      "readonly" => "Target is read-only",
+      "offscreen" => "Target is outside the viewport; scroll to it first",
+      "covered" => "Target is behind another element",
+      "option" => "That option is not selectable on this control"
+    }.freeze
     STATE_KEYS = %w[url title text actions scroll marker page_key guards].freeze
     # Binding a new document and mutating one are verified against Safari; reads rely on the epoch.
     VERIFIED_OPS = %w[install act].freeze
@@ -180,7 +187,9 @@ module Wrangle
         @expect_navigation = kind != "scroll"
         { "executed" => observed["id"] }
       when "blocked"
-        raise StalePage, "Target changed or is covered. Observe again."
+        # Four different situations reach here, and a caller who cannot tell them apart cannot fix
+        # any of them: gone, read-only, scrolled away, or sitting under something else.
+        raise StalePage, "#{BLOCKED.fetch(result["reason"], "Target is not actionable")}. Observe again."
       when "epoch_lost"
         # The epoch is checked before anything is dispatched, so nothing was mutated.
         raise StalePage, "The document changed before execution. Observe again."

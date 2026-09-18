@@ -16,6 +16,8 @@
 - `--backend mcp` drives `safaridriver --mcp` instead of Apple Events: ~3ms per action against
   ~120ms, behind ~4s of startup, so it only pays off past roughly 28 actions. Experimental — its
   automation tab is backgrounded, and menus animated on `requestAnimationFrame` do not respond.
+- A blocked action says which of the four reasons stopped it — gone, read-only, scrolled out of
+  view, or behind something else — instead of one message covering all of them.
 - The step budget counts work done, not attempts made; stale retries and second looks no longer
   spend a leg's allowance, with a separate spin cap for loops making no progress.
 - Waiting is an operation the model can choose rather than a fixed pause, and the settle poll starts

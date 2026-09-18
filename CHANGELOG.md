@@ -16,6 +16,11 @@
 - `--backend mcp` drives `safaridriver --mcp` instead of Apple Events: ~3ms per action against
   ~120ms, behind ~4s of startup, so it only pays off past roughly 28 actions. Experimental — its
   automation tab is backgrounded, and menus animated on `requestAnimationFrame` do not respond.
+- `BLOCKED` is held to its own floor (0.6) that `--min-confidence` can raise but not lower, and a
+  weak one gets two further looks with a widening pause before it is believed. A control that has
+  not rendered yet is not a dead end, and lowering the floor to help an underconfident click should
+  not make it easier to abandon the run.
+- A second look appears in the transcript as `RELOOK` rather than being silently discarded.
 - A `select` is no longer hit-tested before it runs. Styled dropdowns hide the native control under
   an overlay, which made Amazon's sort permanently unactionable; a select is driven by assigning
   value and dispatching input/change, so nothing depends on it being the topmost element.

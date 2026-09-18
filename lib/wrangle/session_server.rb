@@ -22,7 +22,17 @@ module Wrangle
     SOFT_SETTLE = 0.6
     MAX_SOFT = 1
     SPIN_ALLOWANCE = 3
-    RECONSIDER = %i[unsure soft_done].freeze
+    RECONSIDER = %i[unsure soft_done absent].freeze
+    # Acting wrongly costs one action, which the next step can usually undo. Declaring BLOCKED throws
+    # away every remaining leg, and no later step can recover it — so lowering --min-confidence to
+    # help an underconfident click must not also make it easier to abandon the run.
+    BLOCKED_FLOOR = 0.6
+    # "Not there" is the one conclusion that time can refute. A control that has not rendered yet
+    # becomes a control that has, and inside a plan the next leg starts milliseconds after the last
+    # one finished — Amazon's filter sidebar hydrates well after its results do. So wait longer and
+    # look again before believing a page is a dead end: two further looks with a widening pause,
+    # against the one an ordinary low-confidence decision gets.
+    BLOCKED_RELOOKS = 2
     DEFAULT_LEG_STEPS = 8
     STEADY_CEILING = 1.2
     MAX_MISSES = 4
@@ -324,11 +334,13 @@ module Wrangle
         # that had not arrived yet reads as ambiguity. A second decision costs ~350ms; handing back to
         # the calling agent costs a full model turn, measured at 5-6s. Spend the cheap one first.
         if RECONSIDER.include?(outcome)
-          break if tally[:soft] >= MAX_SOFT
+          looks = outcome == :absent ? BLOCKED_RELOOKS : MAX_SOFT
+          break if tally[:soft] >= looks
 
+          waited = backoff(SOFT_SETTLE, tally[:soft])
           tally[:soft] += 1
-          steps.pop
-          steady(SOFT_SETTLE)
+          steps.push(looked_again(steps.pop, tally[:soft], waited))
+          steady(waited)
           next
         end
         break if outcome == :stop
@@ -393,7 +405,7 @@ module Wrangle
       # through and make BLOCKED earn a handoff.
       if choice.stop?
         return :stop unless weak?(choice, request)
-        return :unsure if choice.operation == "BLOCKED" && unsure?(choice, request, record)
+        return :absent if choice.operation == "BLOCKED" && unsure?(choice, request, record)
 
         return :soft_done
       end
@@ -417,9 +429,21 @@ module Wrangle
 
     # Jev reports how sure it is, and a low number is information, not noise. Below the floor Wrangle
     # stops and hands the page back to whoever called it, saying what it was torn between.
+    # A second look is not free and it is not nothing: it explains both the pause and why the run
+    # ended up where it did, so it belongs in the transcript rather than being quietly discarded.
+    def looked_again(step, look, waited)
+      { "operation" => "RELOOK", "confidence" => step["confidence"],
+        "action" => "#{step["operation"] == "HANDOFF" ? step["action"][/\A[^;]+/] : "Not sure yet"}; " \
+                    "waited #{(waited * 1000).round}ms and looked again (#{look})" }
+    end
+
+    def floor_for(choice, request)
+      base = (request["min_confidence"] || DEFAULT_CONFIDENCE).to_f
+      choice.operation == "BLOCKED" ? [base, BLOCKED_FLOOR].max : base
+    end
+
     def weak?(choice, request)
-      floor = (request["min_confidence"] || DEFAULT_CONFIDENCE).to_f
-      confidence(choice) < floor
+      confidence(choice) < floor_for(choice, request)
     end
 
     def confidence(choice) = [choice.confidence, choice.target_confidence].compact.min.to_f

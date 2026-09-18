@@ -165,12 +165,41 @@ class RunLoopTest < Minitest::Test
 
   def test_an_uncertain_blocked_hands_back_and_abandons_the_rest_of_the_plan
     client = serving([{ operation: "BLOCKED", confidence: 0.3 },
+                      { operation: "BLOCKED", confidence: 0.3 },
                       { operation: "BLOCKED", confidence: 0.3 }])
 
     value = run_plan(client, plan: ["Might be stuck", "Never reached"], min_confidence: 0.5)
 
     assert_equal ["Might be stuck"], goals(value)
     assert_equal "HANDOFF", value["stopped"]
+    assert_equal 3, @jev.asked.length, "a weak BLOCKED should be looked at again before it is believed"
+  end
+
+  # Amazon's filter sidebar renders after its results do, and inside a plan the next leg starts
+  # milliseconds later — so the control a leg needs can be genuinely absent when Jev first looks,
+  # and present a moment afterwards. Believing the first look ended the run one click in.
+  def test_a_control_that_has_not_rendered_yet_is_waited_for_rather_than_called_a_dead_end
+    client = serving([{ operation: "BLOCKED", confidence: 0.3 },
+                      { operation: "CLICK", target: CLICK, confidence: 0.9 },
+                      { operation: "DONE", confidence: 0.9 }])
+
+    value = run_plan(client, plan: ["Click it once it arrives"], min_confidence: 0.5)
+
+    assert_equal "DONE", value["stopped"]
+    assert_equal([CLICK], executed(value).map { _1["action"] })
+    assert_includes operations(value), "RELOOK"
+  end
+
+  # A floor low enough to let an underconfident click through must not also lower the bar for the one
+  # decision that throws away every remaining leg.
+  def test_a_low_floor_does_not_make_it_easier_to_abandon_the_run
+    client = serving([{ operation: "BLOCKED", confidence: 0.45 },
+                      { operation: "BLOCKED", confidence: 0.45 },
+                      { operation: "BLOCKED", confidence: 0.45 }])
+
+    value = run_plan(client, plan: ["Might be stuck", "Never reached"], min_confidence: 0.4)
+
+    assert_equal "HANDOFF", value["stopped"], "0.45 clears the caller's floor but not the BLOCKED floor"
   end
 
   def test_a_confident_blocked_is_reported_as_blocked_without_a_second_look

@@ -7,7 +7,8 @@
   `observe` and `act` are separate shell commands against the same page.
 - Every action reports what moved — appeared/gone controls, text and scroll deltas, and an explicit
   "nothing changed" — so a caller can tell a click that worked from one that did not.
-- `--settle` polls until the page stops changing rather than sleeping a guessed interval.
+- `--settle` polls until the page stops changing rather than sleeping a guessed interval, and
+  waits out a quiet floor first so a click that navigates is not mistaken for one that did nothing.
 - Distinct exit codes separate "observe and retry" from "this session is over".
 - `skills/wrangle`: an Agent Skill so an AI agent drives Safari by shell command, not by script.
 - Fixed the test fixture emitting `scroll` as an integer where Safari emits `{y, height}`.

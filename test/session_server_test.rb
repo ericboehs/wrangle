@@ -73,6 +73,29 @@ class SessionServerTest < Minitest::Test
     assert_equal 0, after["changed"]["text_delta"]
   end
 
+  # A click that navigates changes nothing for the first few hundred milliseconds. Settling must not
+  # mistake that lag for a finished page, or it reports a working action as "nothing changed".
+  def test_settling_watches_a_still_page_past_the_quiet_floor
+    client = serving
+    client.call("observe")
+    elapsed = timed { client.call("observe", settle: 3) }
+
+    assert_operator elapsed, :>=, Wrangle::SessionServer::QUIET_FLOOR - 0.2
+    assert_operator elapsed, :<, 3.5, "it must still stop at the timeout"
+  end
+
+  def test_no_settle_returns_immediately
+    client = serving
+    client.call("observe")
+    assert_operator timed { client.call("observe", settle: 0) }, :<, 0.5
+  end
+
+  def timed
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    yield
+    Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+  end
+
   def test_scrolling_reports_how_far_the_page_moved
     client = serving
     first = client.call("observe").fetch("value")

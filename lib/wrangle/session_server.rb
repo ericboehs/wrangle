@@ -18,6 +18,10 @@ module Wrangle
   class SessionServer
     SETTLE_POLL = 0.3
     STABLE_ROUNDS = 2
+    # A click that navigates changes nothing for the first few hundred milliseconds. Without a floor,
+    # two identical reads arrive before the browser has begun and the page is declared settled, which
+    # reports a working action as "nothing changed" — worse than saying nothing at all.
+    QUIET_FLOOR = 1.5
 
     def self.socket_path(name)
       File.join(ENV["WRANGLE_HOME"] || File.join(Dir.home, ".wrangle"), "#{name}.sock")
@@ -123,22 +127,30 @@ module Wrangle
 
     def observe(settle)
       before = @page
-      @page = settle.positive? ? settled(settle) : @session.observe
+      @page = settle.positive? ? settled(settle, before) : @session.observe
       describe(before, @page)
     end
 
-    # Poll until the page stops changing, rather than sleeping a guessed number of seconds.
-    def settled(timeout)
+    # Poll until the page stops changing, rather than sleeping a guessed number of seconds. Stability
+    # only counts once the page has moved, or once the floor has passed with it sitting still.
+    def settled(timeout, baseline)
       page = @session.observe
       deadline = now + timeout
+      floor = now + [QUIET_FLOOR, timeout].min
       stable = 0
-      while now < deadline && stable < STABLE_ROUNDS
+      moved = departed?(baseline, page)
+      until now >= deadline || (stable >= STABLE_ROUNDS && (moved || now >= floor))
         sleep SETTLE_POLL
         nxt = @session.observe
         stable = nxt["fingerprint"] == page["fingerprint"] ? stable + 1 : 0
+        moved ||= departed?(baseline, nxt)
         page = nxt
       end
       page
+    end
+
+    def departed?(baseline, page)
+      !baseline.nil? && baseline["fingerprint"] != page["fingerprint"]
     end
 
     def act(request)
@@ -148,7 +160,7 @@ module Wrangle
       before = @page
       @session.act(action, @page, text: request["text"])
       @acted += 1
-      @page = settled(request.fetch("settle", 3).to_f)
+      @page = settled(request.fetch("settle", 3).to_f, before)
       describe(before, @page).merge("executed" => label(action), "kind" => action["kind"])
     end
 

@@ -43,6 +43,12 @@
   spend a leg's allowance, with a separate spin cap for loops making no progress.
 - Waiting is an operation the model can choose rather than a fixed pause, and the settle poll starts
   impatient and backs off only when the page proves it is churning.
+- Unit tests for the three pieces that had only been covered through the loop: the action space, the
+  decider, and the MCP bridge. The bridge's run against a fake `safaridriver --mcp` speaking real
+  JSON-RPC over a real pipe, so a silent server, a dead one, and a document that took the installed
+  runtime with it are all exercised rather than described. Nine deliberate mutations — folding
+  actions by node, per-option select targets, the argmax and sum checks on a distribution, reading
+  an unnamed head, retrying a mutation whose runtime vanished — were each confirmed to fail a test.
 
 - Initial Safari backend: scoped windows, snapshot observations, guarded actions.
 - Interactive sessions: a background server holds one window behind a socket in `~/.wrangle`, so

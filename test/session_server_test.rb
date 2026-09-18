@@ -35,9 +35,9 @@ class SessionServerTest < Minitest::Test
 
   # The seam the run loop drives, without the socket in the way. `decide` watches the page while Jev
   # thinks and keeps the read; `observe!` may promote it, but only while it still describes the page.
-  def seam(turns, **config)
+  def seam(turns, thinks_for: 0.2, **config)
     Wrangle::SessionServer.new(@socket, {}, session: dedicated(**config),
-                                            jev: ScriptedJev.new(turns, thinks_for: 0.2))
+                                            jev: ScriptedJev.new(turns, thinks_for: thinks_for))
   end
 
   def reads = page_ops.count { _1["op"] == "observe" }
@@ -268,7 +268,10 @@ class SessionServerTest < Minitest::Test
   # from a page that has held still. A page that has not held still is read again for as long as the
   # answer takes — which is the only case where the second read is worth the Apple Events.
   def test_a_page_that_keeps_moving_is_read_again_for_as_long_as_the_answer_takes
-    server = seam([{ operation: "CLICK", target: "Find stays", confidence: 0.9 }], drifts: 500)
+    # A full second of thinking against a 50ms poll. The margin is deliberate: each read is a
+    # subprocess round-trip, and on a slow machine a tighter budget measures the runner, not the loop.
+    server = seam([{ operation: "CLICK", target: "Find stays", confidence: 0.9 }],
+                  thinks_for: 1.0, drifts: 500)
     server.observe!
 
     before = reads

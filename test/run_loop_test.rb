@@ -239,9 +239,27 @@ class RunLoopTest < Minitest::Test
     assert_equal "DONE", value["stopped"]
   end
 
+  # The verifier reads one snapshot; the actor knows what it did. A leg that applied an Amazon filter
+  # was disputed at 80% five runs running, because the only proof on the page was a link offering to
+  # remove the filter — and handing back there throws away every remaining leg to win an argument the
+  # page cannot settle.
+  def test_a_leg_that_acted_is_taken_at_its_word_when_the_page_will_not_agree
+    refuses = { operation: "DONE", confidence: 0.9, met: false, met_confidence: 0.9 }
+    client = serving([{ operation: "CLICK", target: CLICK, confidence: 0.9 }, refuses, refuses,
+                      { operation: "DONE", confidence: 0.9 }])
+
+    value = run_plan(client, plan: ["Do the work", "Then the next thing"])
+
+    assert_equal ["Do the work", "Then the next thing"], goals(value)
+    assert_equal "DONE", value["stopped"]
+    assert_match(/taking the work at its word/, value["steps"].find { _1["operation"] == "DONE" }["action"])
+  end
+
   # A claim that keeps failing to check out, after the page has been given time to catch up, is a
   # standoff between the actor and the page that nothing in the loop can settle.
-  def test_a_claim_disputed_to_the_end_hands_back_and_abandons_the_rest_of_the_plan
+  # ...but only against a leg that never did anything, which is the premature-DONE case the check
+  # was built for. There is no work to weigh against the page's reading, so the page wins.
+  def test_a_claim_disputed_to_the_end_by_a_leg_that_did_nothing_hands_back
     client = serving([{ operation: "DONE", confidence: 0.9, met: false, met_confidence: 0.9 }] * 3)
 
     value = run_plan(client, plan: ["Claim it", "Never reached"], min_confidence: 0.5)

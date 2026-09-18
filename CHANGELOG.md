@@ -26,6 +26,9 @@
   pauses hands back. `DONE` is the model reporting on its own work and it is optimistic: a plan
   reported success with a requested filter never applied.
 - `UNPROVEN` in the transcript marks a claim that did not check out, and does not spend the budget.
+- A dispute only ends a run when the leg it disputes has done nothing. A leg that acted is taken at
+  its word once it has looked again: the verifier reads one snapshot, the actor knows what it did,
+  and abandoning the remaining legs is the more expensive way to be wrong.
 - A leg that has not acted yet cannot report `BLOCKED` without confirming it, however sure it is.
   A leg starts the instant the last one ends, so it often looks at a document that is still loading,
   and a half-loaded page does not read as ambiguous — it reads as definite, and reads surer the

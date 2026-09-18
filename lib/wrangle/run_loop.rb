@@ -37,10 +37,10 @@ module Wrangle
     BLOCKED_CEILING = 2.5
     # A confident disagreement from the verification head outweighs the claim; an unsure one is noise.
     VERIFY_FLOOR = 0.6
-    # A dispute usually means "not yet" rather than "not ever" — the same thing a BLOCKED usually
-    # means — so it gets the same widening patience before the run gives up on it. Two claims 0.6s
-    # apart handed back a search that had worked and was still painting.
-    MAX_CLAIMS = 3
+    # A claim is put back to the page this many times before the loop stops arguing with it. A leg
+    # that has acted is only arguing about whether its own work shows, so one more look settles it; a
+    # leg that has done nothing is the premature-DONE case, and that one is worth pressing.
+    CLAIM_LOOKS = { acted: 2, idle: 3 }.freeze
 
     def initialize(session, request, expect)
       @session = session
@@ -171,21 +171,38 @@ module Wrangle
     # asked for never applied. The verification head asked alongside it has no action to gain by
     # saying yes, so a confident disagreement is worth more than the claim.
     #
-    # Returns nil when nothing disputes the claim, :unproven to keep working, or :stop once the
-    # disagreement has repeated — twice is a standoff the loop cannot settle, so it hands back.
+    # But it is worth more, not final, and the two ways of being wrong do not cost the same. The
+    # verifier reads one snapshot; the actor knows what it did. A leg that applied an Amazon filter
+    # was disputed at 80% five runs in a row, because the only proof on the page was one link
+    # offering to remove the filter, among a hundred other elements — and handing back there throws
+    # away every remaining leg to win an argument the page cannot settle.
+    #
+    # So the dispute is decisive only against a leg that has not done anything, which is the case it
+    # was built for. A leg that acted is taken at its word once it has looked again, and the doubt is
+    # written into the transcript for whoever reads it.
     def disputed_done(choice, request, record, tally)
       return nil unless choice.operation == "DONE" && choice.disputed?(VERIFY_FLOOR)
 
       tally[:claims] += 1
-      said = "the page does not show #{request["goal"].to_s.inspect} " \
-             "(#{(choice.met_confidence.to_f * 100).round}% sure)"
-      record["confidence"] = choice.met_confidence
-      if tally[:claims] < MAX_CLAIMS
-        record.merge!("operation" => "UNPROVEN", "action" => "Said done, but #{said}; carrying on")
-        return :unproven
-      end
+      idle = tally[:done].zero?
+      said = "the page does not show #{request["goal"].to_s.inspect} (#{pct(choice.met_confidence)} sure)"
+      return unproven(record, choice, said) if tally[:claims] < CLAIM_LOOKS[idle ? :idle : :acted]
+      return handoff(record, choice, said, tally) if idle
 
-      record.merge!("operation" => "HANDOFF", "action" => "Said done twice, but #{said}; check it yourself")
+      record["action"] = "Done, but #{said}; taking the work at its word"
+      nil
+    end
+
+    def unproven(record, choice, said)
+      record.merge!("operation" => "UNPROVEN", "confidence" => choice.met_confidence,
+                    "action" => "Said done, but #{said}; carrying on")
+      :unproven
+    end
+
+    def handoff(record, choice, said, tally)
+      record.merge!("operation" => "HANDOFF", "confidence" => choice.met_confidence,
+                    "action" => "Said done #{tally[:claims]} times without doing anything, " \
+                                "but #{said}; check it yourself")
       :stop
     end
 
@@ -210,9 +227,9 @@ module Wrangle
 
       weakest = confidence(choice)
       reason = if force && !weak?(choice, request)
-                 "#{choice.label.inspect} on a leg that has not acted yet (#{(weakest * 100).round}% sure)"
+                 "#{choice.label.inspect} on a leg that has not acted yet (#{pct(weakest)} sure)"
                else
-                 "Not sure enough to act (#{(weakest * 100).round}% on #{choice.label.inspect})"
+                 "Not sure enough to act (#{pct(weakest)} on #{choice.label.inspect})"
                end
       record.merge!("operation" => "HANDOFF", "confidence" => weakest,
                     "action" => "#{reason}; look at the page and choose")
@@ -255,6 +272,7 @@ module Wrangle
     def confidence(choice) = [choice.confidence, choice.target_confidence].compact.min.to_f
     def backoff(base, missed) = missed.zero? ? base : [base * (2**missed), STEADY_CEILING].min
     def patience(outcome, soft) = [SOFT_SETTLE * (2**soft), outcome == :absent ? BLOCKED_CEILING : STEADY_CEILING].min
+    def pct(value) = "#{(value.to_f * 100).round}%"
     def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   end
 end

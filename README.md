@@ -312,9 +312,22 @@ overrules the claim and the leg carries on working:
  5. done  DONE                                                 (79% sure)
 ```
 
-An unsure `no` is ignored — a verifier that is merely uncertain is noise, not evidence. A dispute
-that survives three widening pauses is a standoff the loop cannot settle, so it hands back rather
-than working on a goal it cannot confirm.
+An unsure `no` is ignored — a verifier that is merely uncertain is noise, not evidence. And a
+dispute is worth more than the claim, not final: the verifier reads one snapshot, while the actor
+knows what it did. A leg that applied an Amazon filter was disputed at 80% five runs in a row,
+because the only proof on the page was a single link offering to remove the filter again.
+
+So a dispute is decisive only against a leg that has **not done anything** — the premature-`DONE`
+case it was built for, where there is no work to weigh against the page's reading. A leg that acted
+looks again, then is taken at its word with the doubt written into the transcript:
+
+```
+ 3. done  Done, but the page does not show "...the 4 Stars & Up filter" (79% sure)
+```
+
+A whole-task check at the end of a plan was tried and dropped: asked whether a filtered, sorted list
+had been achieved, it scored **lower on runs that succeeded than on runs that failed**. Absence is
+much harder to see than presence, and a check that cannot tell the two apart is worse than none.
 
 ### Backends
 

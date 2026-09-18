@@ -1,0 +1,72 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require_relative "../lib/wrangle"
+
+# A deliberately small surface. Wrangle's job is to hand one window to a program; the CLI exists to
+# see what is available and to prove the bridge works, not to drive a session from the shell.
+module Wrangle
+  module CLI
+    USAGE = <<~TEXT
+      wrangle - hand one Safari window to a program, and no more than that
+
+      Usage:
+        wrangle windows [--titles]   list Safari windows (titles and URLs are opt-in)
+        wrangle displays             list displays in AppleScript window coordinates
+        wrangle observe <window_id>  observe one window once and print what it offers
+        wrangle version
+
+      Wrangle never closes a window it did not open, and never acts on one you did not name.
+    TEXT
+
+    module_function
+
+    def run(argv)
+      case argv.first
+      when "windows" then windows(argv.include?("--titles"))
+      when "displays" then displays
+      when "observe" then observe(argv[1])
+      when "version" then puts Wrangle::VERSION
+      when nil, "help", "-h", "--help" then puts USAGE
+      else
+        warn "unknown command: #{argv.first}\n\n#{USAGE}"
+        1
+      end
+    rescue Wrangle::Error => e
+      warn "#{e.class.name.split("::").last}: #{e.message}"
+      1
+    end
+
+    def windows(titles)
+      Wrangle::Safari.windows(titles: titles).each do |window|
+        line = format("%8d  display %-4s %d tab%s", window["window_id"], window["display"] || "?",
+                      window["tabs"], window["tabs"] == 1 ? "" : "s")
+        line += "  #{window["title"]}" if titles
+        puts line
+      end
+      0
+    end
+
+    def displays
+      Wrangle::Safari.displays.each_with_index do |display, index|
+        puts format("%d  x=%-7d y=%-7d %dx%d", index, display["x"], display["y"],
+                    display["width"], display["height"])
+      end
+      0
+    end
+
+    def observe(window_id)
+      raise Wrangle::Error, "observe needs a window id (see `wrangle windows`)" unless window_id =~ /\A\d+\z/
+
+      Wrangle::Safari.attach(window_id: Integer(window_id)) do |session|
+        page = session.observe
+        puts "#{page["title"]}  <#{page["url"]}>"
+        puts "fingerprint #{page["fingerprint"][0, 16]}  #{page["actions"].size} actions"
+        page["actions"].each { |action| puts format("  %-7s %s", action["kind"], action["label"]) }
+      end
+      0
+    end
+  end
+end
+
+exit(Wrangle::CLI.run(ARGV) || 0)

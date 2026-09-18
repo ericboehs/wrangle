@@ -1,0 +1,47 @@
+AllCops:
+  TargetRubyVersion: 3.2
+  NewCops: enable
+  SuggestExtensions: false
+
+# Wrangle uses double quotes throughout, and prose-length comments explaining why a refusal exists.
+Style/StringLiterals:
+  EnforcedStyle: double_quotes
+Style/StringLiteralsInInterpolation:
+  EnforcedStyle: double_quotes
+Style/Documentation:
+  Enabled: false
+
+Layout/LineLength:
+  Max: 120
+
+# The bridge and session methods are state machines. Splitting one to satisfy a line count would
+# scatter a refusal and the reason for it across methods, which is exactly what this code must not do.
+Metrics/MethodLength:
+  Max: 30
+Metrics/AbcSize:
+  Max: 30
+  Exclude:
+    - "test/**/*.rb"
+Metrics/CyclomaticComplexity:
+  Max: 15
+Metrics/PerceivedComplexity:
+  Max: 15
+Metrics/ClassLength:
+  Max: 275
+  Exclude:
+    - "test/**/*.rb"
+Metrics/BlockLength:
+  Exclude:
+    - "test/**/*.rb"
+    - "*.gemspec"
+Metrics/ParameterLists:
+  Max: 9
+
+# `op` is the protocol's own word for a bridge or page operation; a longer name would be a lie.
+Naming/MethodParameterName:
+  AllowedNames: ["op", "io", "id", "to", "x", "y", "w", "h"]
+
+# The CLI formats fixed columns; annotated tokens would only make the format strings harder to read.
+Style/FormatStringToken:
+  Exclude:
+    - "exe/wrangle"

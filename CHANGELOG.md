@@ -16,6 +16,9 @@
 - `--backend mcp` drives `safaridriver --mcp` instead of Apple Events: ~3ms per action against
   ~120ms, behind ~4s of startup, so it only pays off past roughly 28 actions. Experimental — its
   automation tab is backgrounded, and menus animated on `requestAnimationFrame` do not respond.
+- A `select` is no longer hit-tested before it runs. Styled dropdowns hide the native control under
+  an overlay, which made Amazon's sort permanently unactionable; a select is driven by assigning
+  value and dispatching input/change, so nothing depends on it being the topmost element.
 - A blocked action says which of the four reasons stopped it — gone, read-only, scrolled out of
   view, or behind something else — instead of one message covering all of them.
 - The step budget counts work done, not attempts made; stale retries and second looks no longer

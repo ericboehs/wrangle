@@ -4,7 +4,11 @@ require_relative "wrangle/version"
 require_relative "wrangle/errors"
 require_relative "wrangle/observation"
 require_relative "wrangle/jxa_bridge"
+require_relative "wrangle/mcp_bridge"
 require_relative "wrangle/safari"
+require_relative "wrangle/jev"
+require_relative "wrangle/action_space"
+require_relative "wrangle/decider"
 require_relative "wrangle/session_server"
 
 # Hand one Safari window to a program, and no more than that.

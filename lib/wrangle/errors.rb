@@ -36,4 +36,18 @@ module Wrangle
 
   # A decision no longer refers to the observed page. Observe again before deciding again.
   class StalePage < Error; end
+
+  # Raised when the decision service is unusable: unreachable, slow, or answering with something it
+  # was never offered. A bad answer is a refusal, not a fallback to guessing.
+  class JevError < Error
+    attr_reader :code
+
+    def initialize(message, code: nil)
+      super(message)
+      @code = code
+    end
+  end
+
+  # Raised when Wrangle was asked to decide without the configuration to do it.
+  class ConfigurationError < Error; end
 end

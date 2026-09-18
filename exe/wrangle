@@ -25,8 +25,14 @@ module Wrangle
         wrangle windows [--titles]        list Safari windows
         wrangle displays                  list displays in AppleScript window coordinates
 
+      Decide with Jev (needs JEV_API_KEY):
+        wrangle decide --goal "..."        propose one action; changes nothing
+        wrangle run --goal "..." --execute act on its own, bounded by --steps
+
       Interactive session (survives between commands):
         wrangle open <url> [--display N]  open a window Wrangle owns
+                          [--side left]   park it on half a display
+                          [--backend mcp] drive safaridriver's own tab instead of Apple Events
         wrangle attach <window_id>        take over a window you already have open
         wrangle observe [--match RE]      look; lists numbered actions
         wrangle act <ref> [--text STR]    do one action, and report what changed
@@ -52,6 +58,8 @@ module Wrangle
       when "observe" then observe(options)
       when "act" then act(argv.first, options)
       when "text" then text(options)
+      when "decide" then propose(argv, options, execute: false)
+      when "run" then propose(argv, options, execute: true)
       when "status" then status(options)
       when "close" then close(options)
       when "__serve" then serve(argv)
@@ -69,9 +77,20 @@ module Wrangle
       OptionParser.new do |o|
         o.on("--session NAME") { |v| options[:session] = v }
         o.on("--display N", Integer) { |v| options[:display] = v }
+        o.on("--side SIDE") { |v| options[:side] = v }
+        o.on("--backend NAME") { |v| options[:backend] = v }
+        o.on("--steady MS", Float) { |v| options[:steady] = v / 1000.0 }
+        o.on("--plan GOAL") { |v| (options[:plan] ||= []) << v }
+        o.on("--leg-steps N", Integer) { |v| options[:leg_steps] = v }
         o.on("--text STR") { |v| options[:text] = v }
         o.on("--match RE") { |v| options[:match] = v }
         o.on("--settle S", Float) { |v| options[:settle] = v }
+        o.on("--goal STR") { |v| options[:goal] = v }
+        o.on("--literal PAIR") { |v| (options[:literals] ||= {}).store(*v.split("=", 2)) }
+        o.on("--steps N", Integer) { |v| options[:steps] = v }
+        o.on("--min-confidence F", Float) { |v| options[:min_confidence] = v }
+        o.on("--execute") { options[:execute] = true }
+        o.on("--expect RE") { |v| options[:expect] = v }
         o.on("--titles") { options[:titles] = true }
         o.on("--all") { options[:all] = true }
         o.on("--json") { options[:json] = true }
@@ -116,8 +135,40 @@ module Wrangle
       return warn("A session named #{options[:session].inspect} is already running.") || USAGE if
         SessionClient.new(socket).running?
 
-      spawn_server(socket, target.merge("display" => options[:display]))
+      backend = (options[:backend] || "jxa").to_s
+      unless %w[jxa mcp].include?(backend)
+        return warn("Unknown backend #{backend.inspect}. Choose jxa (Apple Events) or mcp (safaridriver).") || USAGE
+      end
+
+      bounds = options[:side] && side_bounds(options[:display], options[:side])
+      return USAGE if options[:side] && bounds.nil?
+
+      # A display index and explicit bounds are mutually exclusive downstream, and --side has already
+      # resolved the display into a rectangle, so send one or the other and never both.
+      spawn_server(socket, target.merge("display" => (bounds ? nil : options[:display]),
+                                        "bounds" => bounds, "backend" => backend))
       observe(options)
+    end
+
+    # Half a screen is the useful case: a window big enough to render a real page, parked where it is
+    # not in the user's way. Resolved here rather than in the session so the geometry is visible in
+    # the command that asked for it.
+    SIDES = %w[left right top bottom].freeze
+
+    def side_bounds(index, side)
+      return warn("Unknown --side #{side.inspect}. Choose #{SIDES.join(", ")}.") && nil unless SIDES.include?(side)
+
+      listed = Wrangle::Safari.displays
+      display = listed[index || 0]
+      return warn("No display #{index || 0}; #{listed.length} attached.") && nil unless display
+
+      x, y, width, height = display.values_at("x", "y", "width", "height")
+      case side
+      when "left" then [x, y, width / 2, height]
+      when "right" then [x + (width / 2), y, width / 2, height]
+      when "top" then [x, y, width, height / 2]
+      else [x, y + (height / 2), width, height / 2]
+      end
     end
 
     def spawn_server(socket, target)
@@ -184,6 +235,66 @@ module Wrangle
       body = body.grep(Regexp.new(options[:match], Regexp::IGNORECASE)) if options[:match]
       puts body
       OK
+    end
+
+    # `decide` proposes and stops there. `run` loops, and still refuses to touch the page unless the
+    # caller says --execute, because a decision loop that acts by default is a decision loop that
+    # surprises someone.
+    def propose(argv, options, execute:)
+      plan = options[:plan] || []
+      goal = options[:goal] || (argv.first if plan.empty?) || plan.first
+      return warn("#{execute ? "run" : "decide"} needs a goal") || USAGE unless goal
+
+      params = { goal: goal, literals: options[:literals] || {},
+                 min_confidence: options[:min_confidence], settle: options[:settle] || 3.0,
+                 steady: options[:steady] }
+      return steps(options, "decide", params) unless execute
+      return warn("run acts on the page. Add --execute to allow it.") || USAGE unless options[:execute]
+
+      steps(options, "run", params.merge(execute: true, steps: options[:steps] || (plan.empty? ? 8 : 8 * plan.size),
+                                         plan: plan, leg_steps: options[:leg_steps], expect: options[:expect]))
+    end
+
+    def steps(options, op, params)
+      reply = client(options).call(op, **params)
+      return emit(reply) if options[:json]
+      return failed(reply, options) unless reply["ok"]
+
+      value = reply["value"]
+      list = value["steps"] || [value]
+      numbered = list.count { |step| step["operation"] != "GOAL" } > 1
+      counter = 0
+      list.each do |step|
+        counter += 1 unless step["operation"] == "GOAL"
+        show_step(step, numbered ? counter : nil)
+      end
+      return OK if value["proven"].nil?
+
+      puts value["proven"] ? "proven  the page shows #{value["expected"].inspect}" : nil
+      return OK if value["proven"]
+
+      warn "unproven  the page never showed #{value["expected"].inspect}"
+      STALE
+    end
+
+    def show_step(step, number)
+      if step["operation"] == "GOAL"
+        puts format("\n== %d. %s", step["index"], step["action"])
+        return
+      end
+
+      mark = if step["executed"] then "did "
+             elsif step["operation"] == "HANDOFF" then "ask "
+             elsif %w[DONE BLOCKED].include?(step["operation"]) then step["operation"].downcase
+             else "would"
+             end
+      sure = format("%.0f%% sure", step["confidence"] * 100)
+      sure += format("/%.0f%% target", step["target_confidence"] * 100) if step["target_confidence"]
+      sure += format(", jev %dms", step["decided_in_ms"]) if step["decided_in_ms"]
+      sure += format(", step %dms", step["step_ms"]) if step["step_ms"]
+      puts format("%s%-5s %-52s (%s)", number ? format("%2d. ", number) : "", mark,
+                  step["action"].to_s[0, 52], sure)
+      puts format("      typed: %s", step["text"].inspect) if step["text"]
     end
 
     def request(options, op, **params)

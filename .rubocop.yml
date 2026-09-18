@@ -53,6 +53,7 @@ Naming/MethodParameterName:
 Style/FormatStringToken:
   Exclude:
     - "exe/wrangle"
+    - "test/coverage_report.rb" # Same reason: a fixed-column table, read as a table.
 
 # The CLI is one dispatch surface. Splitting it into modules to satisfy a line count would scatter a
 # command, its output format, and its exit code across files, which is worse for a reader chasing one.

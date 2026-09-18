@@ -98,6 +98,10 @@ class FakeMcp
     exit!(0) if @config["die"]
     return failed(id, "JavaScript exception") if @config["tool_error"]
     return evaluated(id, "<html>not json</html>") if @config["bad_json"]
+    # Valid JSON, but not a result: no status to act on, so there is nothing to decode.
+    return evaluated(id, JSON.generate({ "op" => "observe" })) if @config["statusless"]
+    # A tool reply whose content is present but carries no text at all.
+    return reply(id, { "content" => [{ "type" => "image" }] }) if @config["textless"]
     return vanished(id) if !@installed || @missing.positive?
 
     request = JSON.parse(expression[/__wrangleRun\((\{.*?\})\)/, 1] || "{}")

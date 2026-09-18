@@ -153,6 +153,26 @@ class DeciderTest < Minitest::Test
     assert_match(/without answers/, refusal({ "model" => "jev" }).message)
   end
 
+  # No probabilities at all is not a weak answer, it is not an answer. There is nothing to check the
+  # named choice against, so there is no way to tell a decision from a guess.
+  def test_an_answer_with_no_distribution_at_all_is_refused
+    chooser = decider
+    reply = answers(chooser, operation: "CLICK", target: "1")
+    reply["answers"]["operation"].delete("probabilities")
+
+    error = assert_raises(Wrangle::JevError) { chooser.resolve(reply, PAGE) }
+
+    assert_match(/malformed/, error.message)
+  end
+
+  def test_an_answer_that_is_not_even_a_hash_is_refused
+    chooser = decider
+    reply = answers(chooser, operation: "CLICK", target: "1")
+    reply["answers"]["operation"] = "CLICK"
+
+    assert_raises(Wrangle::JevError) { chooser.resolve(reply, PAGE) }
+  end
+
   def test_an_answer_naming_something_that_was_not_offered_is_refused
     chooser = decider
     reply = answers(chooser, operation: "CLICK", target: "1")

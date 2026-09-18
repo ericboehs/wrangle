@@ -10,6 +10,13 @@ require "tmpdir"
 
 require "wrangle"
 
+# No test may reach the network. The session server builds a Jev client from the environment when it
+# is not given one, so a test that forgets to pass a fake quietly spends real money against the real
+# endpoint — which is exactly how this was found. Unsetting the keys turns that mistake into a
+# ConfigurationError instead of a bill. Jev's own tests set them back for the lines that need them.
+ENV.delete("JEV_API_KEY")
+ENV.delete("TYPESAFE_API_KEY")
+
 # Every test runs against a fake bridge process that speaks the real protocol, so the rules being
 # checked are the ones that ship.
 module BridgeHelpers

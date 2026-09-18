@@ -153,6 +153,51 @@ class JxaBridgeTest < Minitest::Test
     assert_match(/closed/, error.message)
   end
 
+  # A bridge that will not leave when asked is made to. The fake ignores the exit request entirely,
+  # so close has to fall through to signalling the process.
+  def test_a_bridge_that_ignores_its_exit_request_is_terminated
+    active = started(hang_on: "exit")
+    pid = active.request("ping")["pid"]
+
+    active.close
+
+    refute_predicate active, :running?
+    assert_raises(Errno::ESRCH) { Process.kill(0, pid) }
+  end
+
+  # Anything Safari writes to stderr is kept, because it is the only explanation available when a
+  # bridge dies without answering.
+  def test_what_the_bridge_writes_to_stderr_is_kept_for_the_error_that_follows
+    active = started(stderr_on: "windows", die_on: "windows")
+
+    assert_raises(Wrangle::BridgeError) { active.request("windows") }
+
+    assert_includes active.stderr.join, "osascript: something went wrong"
+  end
+
+  # Only the tail of what the bridge said is kept. A bridge that chatters cannot be allowed to grow
+  # an unbounded transcript in memory, and the last thing it said is the part that explains the death.
+  def test_only_the_tail_of_a_chattering_bridge_is_kept
+    active = started(stderr_on: "windows", stderr_flood: 120, die_on: "windows")
+
+    assert_raises(Wrangle::BridgeError) { active.request("windows") }
+
+    assert_operator active.stderr.length, :<=, Wrangle::JxaBridge::STDERR_LINES
+    refute_includes active.stderr.join, "noise 0\n", "the oldest lines should have been dropped"
+    assert_includes active.stderr.join, "noise 119", "the newest should not have been"
+  end
+
+  # A reply to a request that has already timed out is not this request's reply, however well-formed
+  # it is. Mistaking one for the other would answer a question with the answer to an earlier one.
+  def test_a_late_reply_to_an_abandoned_request_is_discarded_not_mistaken_for_this_one
+    active = started(late_reply_on: "windows")
+
+    reply = active.request("windows")
+
+    refute reply["late"], "the abandoned request's reply must not be handed back as this one's"
+    assert reply.key?("windows"), "the real reply is the one with the answer in it"
+  end
+
   def test_closing_a_bridge_that_was_never_started_is_not_an_error
     idle = bridge
     idle.close

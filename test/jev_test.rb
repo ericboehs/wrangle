@@ -14,9 +14,9 @@ class JevTest < Minitest::Test
     super
   end
 
-  def asking(script, **options)
+  def asking(script, **)
     @fake = FakeTypeSafe.new(script)
-    Wrangle::Jev.new(api_key: "test-key", endpoint: @fake.endpoint, **options)
+    Wrangle::Jev.new(api_key: "test-key", endpoint: @fake.endpoint, **)
   end
 
   def ask(jev) = jev.ask(state: { "url" => "https://fixture.test" }, questions: { "operation" => %w[CLICK DONE] })
@@ -36,7 +36,7 @@ class JevTest < Minitest::Test
 
     assert_equal "Bearer test-key", request["headers"]["authorization"]
     assert_equal "application/json", request["headers"]["content-type"]
-    assert_match(/\Awrangle\//, request["headers"]["user-agent"])
+    assert_match(%r{\Awrangle/}, request["headers"]["user-agent"])
     assert_equal "POST /v1/systemone HTTP/1.1", request["request_line"]
 
     sent = JSON.parse(request["body"])

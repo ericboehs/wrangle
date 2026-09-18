@@ -225,6 +225,97 @@ class SessionServerTest < Minitest::Test
     assert_operator elapsed, :>=, 2
   end
 
+  # --- a run with nothing in it ------------------------------------------------------------------
+
+  # A run with no budget does no work and stops at nothing. Every summary field that describes "the
+  # last step" has to cope with there being no last step, and a run refusing to start is the ordinary
+  # way that happens — `--steps 0` is a reasonable thing for a caller to pass.
+  def test_a_run_with_no_budget_summarises_cleanly_instead_of_failing
+    jev = ScriptedJev.new([])
+    server = Wrangle::SessionServer.new(@socket, {}, session: dedicated, jev: jev)
+    @thread = Thread.new { server.run }
+    sleep 0.02 until File.socket?(@socket)
+    client = Wrangle::SessionClient.new(@socket)
+
+    value = client.call("run", goal: "Nothing to do", plan: ["A leg"], execute: true,
+                               settle: 0, steps: 0).fetch("value")
+
+    assert_empty value["steps"]
+    assert_nil value["stopped"]
+    assert_equal 1, value["legs"]
+    assert_empty jev.asked, "no budget means nothing was asked of the model"
+  end
+
+  def test_an_op_the_server_does_not_have_is_refused_by_name
+    reply = serving.call("teleport")
+
+    refute reply["ok"]
+    assert_match(/Unknown op "teleport"/, reply["error"])
+  end
+
+  # A settle that is told what to look for and gets it on the second read, not the first: the text
+  # arrives while the page is still moving, which is the case the whole mechanism exists for.
+  def test_text_that_arrives_mid_settle_ends_the_settle
+    client = serving(drifts: 500, appears_after: 2, appears: "Gate B12")
+    client.call("observe")
+
+    value = client.call("act", ref: 1, text: "Lisbon", settle: 10, expect: "Gate B12").fetch("value")
+
+    assert value["changed"]
+  end
+
+  # Watching stops at the first pair of reads that agree, because there is nothing further to learn
+  # from a page that has held still. A page that has not held still is read again for as long as the
+  # answer takes — which is the only case where the second read is worth the Apple Events.
+  def test_a_page_that_keeps_moving_is_read_again_for_as_long_as_the_answer_takes
+    server = seam([{ operation: "CLICK", target: "Find stays", confidence: 0.9 }], drifts: 500)
+    server.observe!
+
+    before = reads
+    server.decide({ "goal" => "Press it" })
+
+    assert_operator reads - before, :>, 2, "a moving page should be looked at more than twice"
+  end
+
+  def test_closing_is_a_reply_before_it_is_a_shutdown
+    client = serving
+
+    assert_equal({ "closing" => true }, client.call("close").fetch("value"))
+  end
+
+  # Closing takes the socket with it: a stale socket file is a session that looks alive and is not.
+  def test_closing_takes_the_socket_with_it
+    client = serving
+    client.call("close")
+
+    @thread.join(2)
+
+    refute_path_exists @socket
+  end
+
+  # --- the client side ---------------------------------------------------------------------------
+
+  def test_a_server_that_hangs_up_without_replying_is_reported_not_silently_nil
+    listener = UNIXServer.new(@socket)
+    Thread.new { listener.accept.close }
+
+    error = assert_raises(Wrangle::BridgeError) { Wrangle::SessionClient.new(@socket).call("status") }
+
+    assert_match(/closed without replying/, error.message)
+  ensure
+    listener&.close
+  end
+
+  def test_running_is_false_for_a_socket_with_nothing_behind_it
+    refute_predicate Wrangle::SessionClient.new(File.join(@tmpdir, "nothing.sock")), :running?
+  end
+
+  def test_running_is_true_once_a_server_answers
+    serving
+
+    assert_predicate Wrangle::SessionClient.new(@socket), :running?
+  end
+
   # --- when the server itself is wrong -------------------------------------------------------------
 
   # A bug is still a reply. The client is blocked on a socket read, so a server that dies here hangs

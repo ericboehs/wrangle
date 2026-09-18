@@ -74,9 +74,11 @@ class Page
 
   # A settle watches the fingerprint, and the fingerprint is url, text, actions and scroll — not the
   # marker. A drift that only bumped the revision would be invisible to the thing it is meant to test.
-  def drift!
+  def drift!(arriving = nil)
     @revision += 1
     @text = "#{@text.sub(/ \(loading \d+\)\z/, "")} (loading #{@revision})"
+    # What the caller is waiting for, landing partway through the drift rather than at the end of it.
+    @text = "#{arriving} #{@text}" if arriving
   end
 
   def apply(action, text)
@@ -123,13 +125,13 @@ class FakeBridge
     @safari = FakeSafari.new(config)
     @reads = 0
     @drifts = config["drifts"].to_i
+    @drifted = 0
     @scope_checks = 0
   end
 
   def handle(request)
     case request["op"]
-    when "ping" then { "pid" => Process.pid, "safari_running" => true,
-                       "safari_instances" => @config.fetch("safari_instances", 1) }
+    when "ping" then ping
     when "scripts" then install_scripts(request)
     when "displays" then { "displays" => [{ "x" => 0, "y" => 31, "width" => 1440, "height" => 2529 },
                                           { "x" => -1920, "y" => 351, "width" => 1920, "height" => 1080 }] }
@@ -162,8 +164,21 @@ class FakeBridge
     end
   end
 
+  # Safari's own reply, or something that is not one. A ping that is not a hash cannot be read for
+  # an instance count, and guessing there is only one is how you end up driving the wrong window.
+  def ping
+    return "not a hash at all" if @config["ping_not_a_hash"]
+
+    { "pid" => Process.pid, "safari_running" => true,
+      "safari_instances" => @config.fetch("safari_instances", 1) }
+  end
+
   def opened(window)
-    window.slice("window_id", "tab_index", "tabs", "url", "title", "bounds")
+    fields = window.slice("window_id", "tab_index", "tabs", "url", "title", "bounds")
+    # Safari can answer an open with a window that has no address yet, and with no id at all.
+    fields.delete("url") if @config["open_without_url"]
+    fields.delete("window_id") if @config["open_without_window_id"]
+    fields
   end
 
   def attach(request)
@@ -177,6 +192,9 @@ class FakeBridge
   end
 
   def close(request)
+    # Not a scope problem: something went wrong that the caller has not been told about, and a close
+    # that fails for a reason nobody understands is worth raising rather than swallowing.
+    raise Refusal.new("bad_request", "Safari refused to close the window") if @config["close_fails"]
     raise Refusal.new("bad_request", "Refusing to close a window this bridge does not own") unless request["owned"]
 
     window = @safari.windows[request["window_id"]]
@@ -262,6 +280,9 @@ class FakeBridge
     @reads += 1
     forget = @config["forget_epoch_after"]
     page.epoch = nil if forget.is_a?(Integer) && @reads > forget
+    # The document survived, but it is not the one that was observed: a reload between the read and
+    # the dispatch. Nothing has been mutated yet, and nothing should be.
+    page.epoch = "e-reloaded" if @config["reload_before_act"] && request["op"] == "act"
     return { "status" => "epoch_lost" } if page.epoch.nil? || page.epoch != request["epoch"]
 
     # A page mid-load answers its own ops with something other than "ok", and a freshness check that
@@ -269,19 +290,25 @@ class FakeBridge
     return { "status" => "loading" } if request["op"] == @config["loading_on"]
 
     case request["op"]
-    when "observe"
-      # A page that keeps changing for a few reads and then stops, which is what a settle is for:
-      # a results list arriving, a price rendering, a banner pushing the page down.
-      page.drift! if @drifts.positive? && (@drifts -= 1) >= 0
-      # A snapshot missing a key the protocol promises is not an observation, however well it parses.
-      state = @config["incomplete_state"] ? page.state.tap { _1.delete("actions") } : page.state
-      { "status" => "ok", "state" => state }
+    when "observe" then observed(page)
     when "marker" then { "status" => "ok", "marker" => page.state["marker"] }
     when "guard" then { "status" => "ok", "guard" => guard_reply(page, request["node"]) }
     when "probe" then { "status" => "ok", "act" => page.act }
     when "act" then act(page, request)
     else raise Refusal.new("bad_request", "Unknown page op #{request["op"].inspect}")
     end
+  end
+
+  def observed(page)
+    # A page that keeps changing for a few reads and then stops, which is what a settle is for: a
+    # results list arriving, a price rendering, a banner pushing the page down.
+    if @drifts.positive? && (@drifts -= 1) >= 0
+      @drifted += 1
+      page.drift!(@drifted == @config["appears_after"] ? @config["appears"] : nil)
+    end
+    # A snapshot missing a key the protocol promises is not an observation, however well it parses.
+    state = @config["incomplete_state"] ? page.state.tap { _1.delete("actions") } : page.state
+    { "status" => "ok", "state" => state }
   end
 
   def act(page, request)
@@ -299,6 +326,12 @@ class FakeBridge
                                       raise Silence
     when "unconfirmed" then { "status" => "dispatched" }
     when "nonsense" then { "status" => "confused" }
+    # The action goes out, the reply never comes, and the probe that would settle it cannot be read
+    # either. Nothing here can know whether the page was touched.
+    when "silent_then_unreadable" then @config["loading_on"] = "probe"
+                                       raise Silence
+    # Dispatched, and then the bridge is gone. There is nothing left to ask about it.
+    when "started_then_dead" then exit!(0)
     else
       page.apply(request["action"], request["text"])
       page.act = { "nonce" => nonce, "phase" => "finished" }
@@ -320,7 +353,16 @@ $stdin.each_line do |line|
   op = request["op"]
   File.open(config["trace"], "a") { |f| f.puts(JSON.generate(request)) } if config["trace"]
 
+  # Whatever Safari would have complained about, and as much of it as the config asks for. It is the
+  # only explanation a caller gets when the bridge then dies without answering, and a bridge that
+  # chatters must not be allowed to grow an unbounded transcript in the process that is reading it.
+  if op == config["stderr_on"]
+    Array.new(config["stderr_flood"].to_i) { warn("noise #{_1}") }
+    warn "osascript: something went wrong"
+  end
   exit 0 if op == "exit" || op == config["die_on"]
+  # A reply to a request that was already abandoned, arriving under an id nobody is waiting for.
+  puts JSON.generate({ "id" => request["id"] - 1, "ok" => true, "late" => true }) if op == config["late_reply_on"]
   next if op == config["hang_on"]
 
   if op == config["garbage_on"]

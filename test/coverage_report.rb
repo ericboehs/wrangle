@@ -34,11 +34,11 @@ module CoverageReport
     [arms.count(&:positive?), arms.length]
   end
 
-  def self.missed_lines(file, result)
+  def self.missed_lines(_file, result)
     result[:lines].each_with_index.filter_map { |hits, i| i + 1 if hits&.zero? }
   end
 
-  def self.missed_branches(file, result)
+  def self.missed_branches(_file, result)
     result[:branches].flat_map do |(kind, _, line, *), arms|
       arms.filter_map { |(arm, _, arm_line, *), hits| "#{line}:#{kind}/#{arm}" if hits.zero? && arm_line }
     end

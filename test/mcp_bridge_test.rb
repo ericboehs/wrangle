@@ -209,6 +209,26 @@ class McpBridgeTest < Minitest::Test
     assert_raises(Wrangle::BridgeError) { made.evaluate(scope, { "op" => "observe" }) }
   end
 
+  # --- replies that parse but are not results ------------------------------------------------------
+
+  def test_a_page_reply_with_no_status_is_not_a_result
+    made = opened(statusless: true)
+
+    error = assert_raises(Wrangle::BridgeError) { made.evaluate(scope, { "op" => "observe" }) }
+
+    assert_match(/invalid result/, error.message)
+  end
+
+  # The MCP content array is the envelope, and an envelope with nothing readable in it is not an
+  # answer however well-formed the JSON-RPC around it is.
+  def test_a_tool_reply_carrying_no_text_is_refused
+    made = opened(textless: true)
+
+    error = assert_raises(Wrangle::BridgeError) { made.evaluate(scope, { "op" => "observe" }) }
+
+    assert_match(/returned no text/, error.message)
+  end
+
   # --- the rest of the operation table -----------------------------------------------------------
 
   # Every other backend starts lazily, and a caller that has a bridge should not have to know which
@@ -249,7 +269,7 @@ class McpBridgeTest < Minitest::Test
 
     assert made.request("close")["closed"]
     refute made.request("close")["closed"], "the handle is spent, so there is nothing left to close"
-    assert_equal 1, rpc_calls.count { _1.dig("params", "name") == "close_tab" }
+    assert_equal(1, rpc_calls.count { _1.dig("params", "name") == "close_tab" })
   end
 
   # A tab list that parses but is not a list is not a list of tabs.

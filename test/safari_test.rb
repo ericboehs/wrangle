@@ -265,7 +265,7 @@ class SafariTest < Minitest::Test
         session.act(find(page, action["label"]), page)
       end
     end
-    assert_empty page_ops.select { |op| op["op"] == "act" }
+    assert_empty(page_ops.select { |op| op["op"] == "act" })
   end
 
   def test_text_belongs_to_a_fill_and_to_nothing_else
@@ -287,7 +287,7 @@ class SafariTest < Minitest::Test
     result = session.act(find(page, "Wait for the page to update"), page)
 
     assert_equal "wait", result["executed"]
-    assert_empty page_ops.select { |op| op["op"] == "act" }
+    assert_empty(page_ops.select { |op| op["op"] == "act" })
     assert_equal page["marker"], session.observe["marker"]
   end
 
@@ -398,6 +398,82 @@ class SafariTest < Minitest::Test
     assert_raises(Wrangle::Error) { handled.observe }
   end
 
+  # A document that reloaded between the read and the dispatch is a different document. The epoch is
+  # checked before anything is sent, so this is the one kind of stale action that is provably
+  # harmless — it is refused outright rather than resolved like an uncertain delivery.
+  def test_an_action_aimed_at_a_document_that_reloaded_first_is_refused_before_dispatch
+    session = dedicated(reload_before_act: true)
+    page = session.observe
+
+    error = assert_raises(Wrangle::StalePage) { session.act(find(page, "Find stays"), page) }
+
+    assert_match(/changed before execution/, error.message)
+  end
+
+  # --- closing ------------------------------------------------------------------------------------
+
+  # A close that fails for a reason nobody understands is raised. A close that fails because the
+  # window is gone or is no longer exclusively ours is not: leaving it open is the right outcome, and
+  # it is already covered by the tab-growth test.
+  def test_a_close_that_fails_for_an_unexplained_reason_is_raised_not_swallowed
+    session = dedicated(close_fails: true)
+    session.observe
+
+    assert_raises(Wrangle::BridgeCallError) { session.close }
+  end
+
+  def test_closing_twice_does_nothing_the_second_time
+    session = dedicated
+    session.observe
+    session.close
+
+    assert_nil session.close
+    assert_equal 1, traced("close").length
+  end
+
+  # Opening positions the window as part of opening it. Taking over a window you already have is the
+  # case that needs a separate move, and only when the caller actually asked for one — a window you
+  # handed over should stay where you left it unless you said otherwise.
+  def test_a_window_taken_over_is_only_moved_when_the_caller_asked
+    windows = [{ url: FIXTURE_URL, window_id: 4242, tabs: 5 }]
+    track(Wrangle::Safari.new(window_id: 4242, url: FIXTURE_URL, bridge: bridge(windows: windows))).observe
+
+    assert_empty traced("bounds"), "nobody asked for it to move"
+
+    moved = track(Wrangle::Safari.new(window_id: 4242, url: FIXTURE_URL, display: 1,
+                                      bridge: bridge(windows: windows)))
+    moved.observe
+
+    assert_equal 1, traced("bounds").length
+  end
+
+  # --- what the bridge hands back when a window opens --------------------------------------------
+
+  # Every later scope check is against this id. Without one there is nothing to be scoped to, so the
+  # session refuses to exist rather than proceeding unscoped.
+  def test_a_window_with_no_id_is_not_a_window_to_work_in
+    error = assert_raises(Wrangle::BridgeError) { dedicated(open_without_window_id: true) }
+
+    assert_match(/no window_id/, error.message)
+  end
+
+  # An address, on the other hand, is allowed to arrive late — a window can be open before it has
+  # navigated. The first observation pins it.
+  def test_a_window_that_has_not_got_an_address_yet_is_pinned_by_its_first_observation
+    session = dedicated(open_without_url: true)
+
+    assert_equal FIXTURE_URL, session.observe["url"]
+    assert_equal FIXTURE_URL, session.expected_url
+  end
+
+  # A ping that cannot be read cannot be read for an instance count either, and guessing there is
+  # only one Safari is how a session ends up driving a window in a different process.
+  def test_a_ping_that_is_not_a_reply_does_not_become_an_instance_count
+    session = dedicated(ping_not_a_hash: true)
+
+    assert_equal FIXTURE_URL, session.observe["url"]
+  end
+
   # --- observations the page cannot make -------------------------------------------------------
 
   # Every field is load-bearing somewhere downstream. A snapshot missing one parses perfectly well
@@ -427,6 +503,44 @@ class SafariTest < Minitest::Test
 
     assert_equal "The page changed", session.moved(page, find(page, "Wait for the page to update"))
     assert_equal "The page changed", session.moved(page)
+  end
+
+  # --- when the outcome cannot be read back ------------------------------------------------------
+
+  # The rule this protects: an action whose delivery is uncertain is never re-sent. Every one of
+  # these ends the session instead, because a second click is the one mistake that cannot be undone.
+  def test_an_action_whose_outcome_cannot_be_read_ends_the_session_rather_than_being_retried
+    session = dedicated(act: "silent_then_unreadable")
+    page = session.observe
+
+    error = assert_raises(Wrangle::DeliveryUnknown) { session.act(find(page, "Find stays"), page) }
+
+    assert_match(/while an action was in flight/, error.message)
+    assert_equal(1, page_ops.count { |op| op["op"] == "act" })
+  end
+
+  # The bridge dying mid-action is the same problem arriving by a different route. Whether it is
+  # noticed as a dead process or as a probe that cannot be answered is a race, and deliberately not
+  # asserted; what matters is that both end the same way and neither sends the action again.
+  def test_a_bridge_that_dies_mid_action_is_never_asked_to_do_it_again
+    session = dedicated(act: "started_then_dead")
+    page = session.observe
+
+    assert_raises(Wrangle::DeliveryUnknown) { session.act(find(page, "Find stays"), page) }
+    assert_equal(1, page_ops.count { |op| op["op"] == "act" })
+    assert_raises(Wrangle::Error) { session.observe }
+  end
+
+  # A session that may have mutated the page cannot describe what it would be closing, so it does
+  # not close it. Leaving a window open is recoverable; closing the wrong one is not.
+  def test_a_session_with_an_unknown_outcome_leaves_its_window_alone
+    session = dedicated(act: "started_then_silent")
+    page = session.observe
+    assert_raises(Wrangle::DeliveryUnknown) { session.act(find(page, "Find stays"), page) }
+
+    session.close
+
+    assert_empty traced("close")
   end
 
   # --- construction --------------------------------------------------------------------------

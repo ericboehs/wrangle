@@ -1,0 +1,206 @@
+# frozen_string_literal: true
+
+require "test_helper"
+require_relative "fixtures/scripted_jev"
+
+# The run loop is the part that acts without asking, so these tests are about the rules that decide
+# when it may keep going: does a plan advance only on a finished leg, does churn get charged to the
+# budget, and is a low-confidence stop trusted. Every bug these cover was first seen on a live page.
+class RunLoopTest < Minitest::Test
+  include BridgeHelpers
+
+  FILL = "Destination"
+  CLICK = "Find stays"
+
+  def setup
+    super
+    @socket = File.join(@tmpdir, "run.sock")
+  end
+
+  def teardown
+    @thread&.kill
+    @thread = nil
+    super
+  end
+
+  def serving(turns, stale_acts: 0, **config)
+    @jev = ScriptedJev.new(turns)
+    session = dedicated(**config)
+    session = FlakySession.new(session, stale_acts: stale_acts) if stale_acts.positive?
+    server = Wrangle::SessionServer.new(@socket, {}, session: session, jev: @jev)
+    @thread = Thread.new { server.run }
+    @thread.abort_on_exception = false
+    client = Wrangle::SessionClient.new(@socket)
+    sleep 0.02 until File.socket?(@socket)
+    client
+  end
+
+  def run_plan(client, plan:, **params)
+    client.call("run", goal: plan.first, plan: plan, execute: true, literals: { "destination" => "Lisbon" },
+                       settle: 0, steady: 0.0, **params).fetch("value")
+  end
+
+  def operations(value) = value.fetch("steps").map { _1["operation"] }
+  def goals(value) = value.fetch("steps").select { _1["operation"] == "GOAL" }.map { _1["action"] }
+  def executed(value) = value.fetch("steps").select { _1["executed"] }
+
+  # --- plan advancement ---------------------------------------------------------------------
+
+  def test_a_plan_runs_every_leg_in_order_and_marks_each_one
+    client = serving([{ operation: "CLICK", target: CLICK, confidence: 0.9 },
+                      { operation: "DONE", confidence: 0.9 },
+                      { operation: "TYPE_TEXT", target: FILL, confidence: 0.9 },
+                      { operation: "DONE", confidence: 0.9 }])
+
+    value = run_plan(client, plan: ["Press the button", "Type the destination"])
+
+    assert_equal ["Press the button", "Type the destination"], goals(value)
+    assert_equal([CLICK, FILL], executed(value).map { _1["action"] })
+    assert_equal "DONE", value["stopped"]
+  end
+
+  def test_each_leg_is_decided_against_its_own_goal
+    client = serving([{ operation: "CLICK", target: CLICK, confidence: 0.9 },
+                      { operation: "DONE", confidence: 0.9 },
+                      { operation: "DONE", confidence: 0.9 }])
+
+    run_plan(client, plan: ["First goal", "Second goal"])
+
+    assert_equal(["First goal", "First goal", "Second goal"], @jev.asked.map { _1[:goal] })
+  end
+
+  def test_a_leg_that_cannot_finish_stops_the_plan_rather_than_guessing_past_it
+    client = serving([{ operation: "BLOCKED", confidence: 0.9 }])
+
+    value = run_plan(client, plan: ["Impossible leg", "Never reached"])
+
+    assert_equal ["Impossible leg"], goals(value)
+    assert_equal "BLOCKED", value["stopped"]
+    assert_empty executed(value)
+  end
+
+  def test_a_single_goal_still_runs_without_plan_markers
+    client = serving([{ operation: "CLICK", target: CLICK, confidence: 0.9 },
+                      { operation: "DONE", confidence: 0.9 }])
+
+    value = client.call("run", goal: "Press the button", execute: true, settle: 0, steady: 0.0).fetch("value")
+
+    refute_includes operations(value), "GOAL"
+    assert_equal 1, executed(value).length
+  end
+
+  # --- budget accounting --------------------------------------------------------------------
+
+  def test_the_leg_budget_caps_the_actions_taken
+    turns = Array.new(5) { { operation: "CLICK", target: CLICK, confidence: 0.9 } }
+    client = serving(turns)
+
+    value = run_plan(client, plan: ["Keep clicking"], leg_steps: 2, steps: 10)
+
+    assert_equal 2, executed(value).length
+  end
+
+  # A stale page is churn, not work. Charging it to the leg is how a form that flickers runs out of
+  # allowance one click before it finishes.
+  def test_a_stale_retry_does_not_spend_the_leg_budget
+    client = serving([{ operation: "CLICK", target: CLICK, confidence: 0.9 },
+                      { operation: "CLICK", target: CLICK, confidence: 0.9 },
+                      { operation: "CLICK", target: CLICK, confidence: 0.9 }],
+                     stale_acts: 1)
+
+    value = run_plan(client, plan: ["Keep clicking"], leg_steps: 2, steps: 10)
+
+    assert_includes operations(value), "RESTALE"
+    assert_equal 2, executed(value).length
+  end
+
+  def test_a_page_that_never_settles_hands_back_instead_of_spinning
+    turns = Array.new(6) { { operation: "CLICK", target: CLICK, confidence: 0.9 } }
+    client = serving(turns, stale_acts: 6)
+
+    value = run_plan(client, plan: ["Click something"], leg_steps: 4, steps: 10)
+
+    assert_empty executed(value)
+    assert_equal "HANDOFF", value["stopped"]
+    assert_equal 4, operations(value).count("RESTALE")
+  end
+
+  # --- the confidence floor ------------------------------------------------------------------
+
+  def test_low_confidence_is_reconsidered_once_before_handing_back
+    client = serving([{ operation: "CLICK", target: CLICK, confidence: 0.2 },
+                      { operation: "CLICK", target: CLICK, confidence: 0.2 }])
+
+    value = run_plan(client, plan: ["Press the button"], min_confidence: 0.5)
+
+    assert_equal 2, @jev.asked.length, "the loop should look again before giving up"
+    assert_equal 1, operations(value).count("HANDOFF"), "only the final doubt is reported"
+    assert_empty executed(value)
+  end
+
+  def test_a_second_look_that_clears_the_floor_acts_normally
+    client = serving([{ operation: "CLICK", target: CLICK, confidence: 0.2 },
+                      { operation: "CLICK", target: CLICK, confidence: 0.9 },
+                      { operation: "DONE", confidence: 0.9 }])
+
+    value = run_plan(client, plan: ["Press the button"], min_confidence: 0.5)
+
+    assert_equal 1, executed(value).length
+    refute_includes operations(value), "HANDOFF"
+  end
+
+  # DONE and BLOCKED are both stops, and both get a second look — but being wrong about them costs
+  # very different amounts, so only one of them may end the plan on a guess.
+  def test_an_uncertain_done_still_advances_the_plan
+    client = serving([{ operation: "DONE", confidence: 0.3 },
+                      { operation: "DONE", confidence: 0.3 },
+                      { operation: "CLICK", target: CLICK, confidence: 0.9 },
+                      { operation: "DONE", confidence: 0.9 }])
+
+    value = run_plan(client, plan: ["Maybe already done", "Do the real work"], min_confidence: 0.5)
+
+    assert_equal ["Maybe already done", "Do the real work"], goals(value)
+    assert_equal([CLICK], executed(value).map { _1["action"] })
+  end
+
+  def test_an_uncertain_blocked_hands_back_and_abandons_the_rest_of_the_plan
+    client = serving([{ operation: "BLOCKED", confidence: 0.3 },
+                      { operation: "BLOCKED", confidence: 0.3 }])
+
+    value = run_plan(client, plan: ["Might be stuck", "Never reached"], min_confidence: 0.5)
+
+    assert_equal ["Might be stuck"], goals(value)
+    assert_equal "HANDOFF", value["stopped"]
+  end
+
+  def test_a_confident_blocked_is_reported_as_blocked_without_a_second_look
+    client = serving([{ operation: "BLOCKED", confidence: 0.9 }])
+
+    value = run_plan(client, plan: ["Truly stuck"], min_confidence: 0.5)
+
+    assert_equal 1, @jev.asked.length
+    assert_equal "BLOCKED", value["stopped"]
+  end
+
+  # --- typing --------------------------------------------------------------------------------
+
+  def test_a_fill_without_a_supplied_literal_asks_for_one_instead_of_inventing_text
+    client = serving([{ operation: "TYPE_TEXT", target: FILL, confidence: 0.9 }])
+
+    value = client.call("run", goal: "Type something", plan: ["Type something"], execute: true,
+                               literals: {}, settle: 0, steady: 0.0).fetch("value")
+
+    assert_equal "HANDOFF", value["stopped"]
+    assert_match(/--literal/, value["steps"].last["action"])
+    assert_empty executed(value)
+  end
+
+  def test_run_refuses_to_touch_the_page_without_execute
+    client = serving([])
+
+    reply = client.call("run", goal: "Press the button", plan: ["Press the button"], settle: 0)
+
+    refute reply["ok"]
+    assert_match(/execute/, reply["error"].to_s)
+  end
+end

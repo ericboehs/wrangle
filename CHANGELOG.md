@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+- `wrangle run --goal "..." --execute`: a decision loop driven by Jev, a typed-choice model that
+  picks one of the actions Wrangle observed. It never writes text — `--literal LABEL=VALUE` supplies
+  it, and a fill with no literal stops and asks.
+- `--plan GOAL` (repeatable): ordered sub-goals advanced internally on DONE, so a whole form is one
+  command instead of one agent turn per click. Measured on Google Flights: 29 steps in ~14s, against
+  ten turns and 129s hand-stepping the same task.
+- A confidence floor (`--min-confidence`, default `0.5`) that looks again once before handing back,
+  because a page half-rendered when the model looked reads as ambiguity. `DONE` and `BLOCKED` are
+  held to it too — an uncertain `DONE` still advances a plan, an uncertain `BLOCKED` must earn its
+  handoff, since being wrong about them costs very different amounts.
+- `--side left|right|top|bottom` parks the window on half a display.
+- `--backend mcp` drives `safaridriver --mcp` instead of Apple Events: ~3ms per action against
+  ~120ms, behind ~4s of startup, so it only pays off past roughly 28 actions. Experimental — its
+  automation tab is backgrounded, and menus animated on `requestAnimationFrame` do not respond.
+- The step budget counts work done, not attempts made; stale retries and second looks no longer
+  spend a leg's allowance, with a separate spin cap for loops making no progress.
+- Waiting is an operation the model can choose rather than a fixed pause, and the settle poll starts
+  impatient and backs off only when the page proves it is churning.
+
 - Initial Safari backend: scoped windows, snapshot observations, guarded actions.
 - Interactive sessions: a background server holds one window behind a socket in `~/.wrangle`, so
   `observe` and `act` are separate shell commands against the same page.

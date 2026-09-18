@@ -212,14 +212,93 @@ sleeping a guessed interval; without it you will read half-loaded pages and beli
 
 | Command | |
 |---|---|
-| `open <url>` / `attach <id>` | start a session; `--display N`, `--session NAME` |
+| `open <url>` / `attach <id>` | start a session; `--display N`, `--side left`, `--session NAME` |
 | `observe` | look; `--match RE`, `--all`, `--settle S` |
 | `act <ref>` | one action; `--text STR`, `--settle S` |
+| `run` | decide and act in a loop; `--goal`, `--plan`, `--execute` |
 | `text` | page text; `--match RE` |
 | `status` / `close` | |
 
 Exit codes: `0` ok, `2` usage, `3` stale (observe and retry), `4` the session is over, `5` no
 session. Add `--json` to any command for the raw reply.
+
+`--side left|right|top|bottom` parks the window on half a display, which is usually where you want
+an agent's browser: big enough to render a real page, out of the way of yours.
+
+## Letting it decide
+
+Stepping by hand costs a full model turn per click. Measured against a real agent driving this same
+form, each turn was **5–6 seconds** — roughly fifteen times the cost of the decision itself. `wrangle
+run` closes that loop in-process using [Jev](https://typesafe.ai), a typed-choice model that picks
+one of the actions Wrangle already observed.
+
+```bash
+wrangle run --goal "Set the origin to OKC and the destination to DEN" \
+  --literal 'where from=OKC' --literal 'where to=DEN' --execute
+```
+
+It never invents text. `--literal LABEL=VALUE` supplies it; a fill with no matching literal stops the
+run and asks. Nothing touches the page without `--execute`.
+
+### Plans
+
+One sub-goal per leg, advancing internally when a leg reports itself done:
+
+```bash
+wrangle run --execute --min-confidence 0.4 \
+  --literal 'where from=OKC' --literal 'where to=DEN' \
+  --plan "Set the origin to OKC and the destination to DEN, choosing from each autocomplete list." \
+  --plan "Open the Departure field, then click the day Monday, October 12, 2026." \
+  --plan "Click Thursday, October 15, 2026, then click Done to confirm the dates." \
+  --plan "Open the passenger selector, add a second adult, then click Done." \
+  --plan "Click Search." \
+  --expect 'taxes \+ fees for 2 adults'
+```
+
+```
+== 1. Set the origin to OKC and the destination to DEN, choosing from each autocomplete list.
+ 1. did   Where from?                              (89% sure/93% target, jev 364ms, step 483ms)
+      typed: "OKC"
+ 3. would The page moved while deciding; looked again (1)   (0% sure, step 415ms)
+ 4. did   Will Rogers International Airport (OKC)   (87% sure/92% target, jev 282ms, step 474ms)
+...
+proven  the page shows "taxes \+ fees for 2 adults"
+```
+
+That run filled the whole form through the site's own calendar and passenger UI in **29 steps and
+~14 seconds of one command**, where hand-stepping the same task took ten agent turns and 129
+seconds. Narrow legs beat one broad goal: a leg that names the next concrete step gets 90%+
+confidence, where a whole-task goal leaves the model weighing whether it is already finished.
+
+A leg that cannot finish ends the plan. Later legs assume the earlier ones happened, so guessing
+past a failure is how a run types a date into a passenger field.
+
+### When it stops
+
+| | |
+|---|---|
+| `did` | acted, with how sure it was and where the time went |
+| `would` | proposed only (no `--execute`) |
+| `ask` | handed back — below the confidence floor, or needs a literal |
+| `done` / `blocked` | the leg reported itself finished, or stuck |
+
+Below `--min-confidence` (default `0.5`) it looks again once — a page half-rendered when the model
+looked reads as ambiguity, and a second decision costs ~350ms against 5–6s for a handoff — then
+hands back rather than acting. This is load-bearing: an early build executed a **5%-confidence**
+target and typed the origin into Google's "Where else?" multi-city field.
+
+Stopping gets the floor too, but `DONE` and `BLOCKED` are not symmetric. Inside a plan an uncertain
+`DONE` is cheap to be wrong about — the next leg simply does the work — while an uncertain `BLOCKED`
+abandons every remaining leg. So both get a second look, `DONE` then passes, and `BLOCKED` must earn
+its handoff.
+
+### Backends
+
+`--backend jxa` (default) drives the running Safari through Apple Events. `--backend mcp` uses
+`safaridriver --mcp` instead: per-action latency drops from ~120ms to ~3ms, but it pays ~4s of
+startup, so it only amortises past roughly 28 actions. It is also **experimental** — its automation
+tab is backgrounded, and pages whose menus animate on `requestAnimationFrame` (Google's ticket-type
+selector, for one) never respond to a click that works fine under JXA.
 
 ## Use it from an AI agent
 

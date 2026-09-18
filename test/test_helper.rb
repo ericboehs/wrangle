@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+# Before anything else: Coverage has to start before the library it measures is loaded.
+require_relative "coverage_report" if ENV["COVERAGE"]
+
 require "json"
 require "English"
 require "minitest/autorun"

@@ -81,7 +81,12 @@ class FakeMcp
 
   def tab_list(id)
     listed = [{ "handle" => @handle, "url" => @config["url"] || "https://fixture.test/stays" }]
-    text(id, @config["bad_tab_list"] ? "not json at all" : JSON.generate(listed))
+    return text(id, "not json at all") if @config["bad_tab_list"]
+    # Valid JSON that is not a list. A caller that trusts the parse and not the shape gets a
+    # NoMethodError several layers away from here.
+    return text(id, JSON.generate({ "handle" => @handle })) if @config["tab_list_not_an_array"]
+
+    text(id, JSON.generate(listed))
   end
 
   # A server that accepts a page request and never answers, and one that dies holding it. Both have

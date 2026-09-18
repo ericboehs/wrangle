@@ -76,7 +76,7 @@ class SessionServerTest < Minitest::Test
     value = serving.call("observe").fetch("value")
     assert_equal BridgeHelpers::FIXTURE_URL, value["url"]
     assert_nil value["changed"]
-    assert_equal([1, 2, 3, 4], value["actions"].map { |a| a["ref"] })
+    assert_equal([1, 2, 3, 4, 5], value["actions"].map { |a| a["ref"] })
     assert_equal "Destination", value["actions"].first["label"]
     assert_equal 12, value["fingerprint"].length
   end
@@ -146,7 +146,7 @@ class SessionServerTest < Minitest::Test
 
     refute reply["ok"]
     assert_equal "ArgumentError", reply["class"]
-    assert_match(/offered 4/, reply["error"])
+    assert_match(/offered 5/, reply["error"])
     refute reply["terminal"]
     assert reply["retryable"]
     assert_match(/observe/i, reply["hint"])
@@ -178,6 +178,122 @@ class SessionServerTest < Minitest::Test
     assert_equal "DeliveryUnknown", reply["class"]
     assert reply["terminal"]
     assert_equal(1, page_ops.count { |op| op["op"] == "act" })
+  end
+
+  # Text read off a cached observation reports the page as it was before the last navigation
+  # finished, so it is always read fresh — and a settle applies to it the same way it does to a look.
+  def test_text_can_be_settled_for_like_an_observation
+    client = serving
+    client.call("observe")
+
+    assert_includes client.call("text", settle: 1).dig("value", "text"), "slow down"
+  end
+
+  # --- settling on a page that is actually moving ------------------------------------------------
+
+  # The quiet floor exists because two identical reads can arrive before the browser has begun. A
+  # page that genuinely moves and then stops should be waited out and then reported as having moved.
+  def test_a_page_that_moves_and_then_stops_is_waited_out_and_reported_as_changed
+    client = serving(drifts: 3)
+    client.call("observe")
+
+    value = client.call("observe", settle: 5).fetch("value")
+
+    assert value["changed"], "the page moved, so the reply should say so"
+  end
+
+  # Waiting for quiet is a proxy. Waiting for the thing you need is the real test, and a results list
+  # may never go quiet at all — so being told what to look for ends the wait as soon as it appears.
+  def test_being_told_what_to_look_for_stops_the_wait_as_soon_as_it_appears
+    client = serving(drifts: 40)
+    client.call("observe")
+
+    elapsed = timed { client.call("act", ref: 1, text: "Lisbon", settle: 10, expect: "Lisbon") }
+
+    assert_operator elapsed, :<, Wrangle::SessionServer::QUIET_FLOOR,
+                    "it should not sit out the quiet floor once the text is on the page"
+  end
+
+  # The opposite case: told to wait for something that never comes, it waits out its timeout rather
+  # than returning the moment the page happens to hold still.
+  def test_waiting_for_something_that_never_arrives_waits_out_the_timeout
+    client = serving(drifts: 500) # Enough that the page is still moving when the deadline arrives.
+    client.call("observe")
+
+    elapsed = timed { client.call("act", ref: 1, text: "Lisbon", settle: 2, expect: "never appears") }
+
+    assert_operator elapsed, :>=, 2
+  end
+
+  # --- when the server itself is wrong -------------------------------------------------------------
+
+  # A bug is still a reply. The client is blocked on a socket read, so a server that dies here hangs
+  # the caller forever instead of telling it anything.
+  def test_a_bug_in_the_server_is_reported_instead_of_hanging_the_caller
+    session = dedicated
+    session.define_singleton_method(:observe) { raise NoMethodError, "undefined method 'fetch' for nil" }
+    server = Wrangle::SessionServer.new(@socket, {}, session: session)
+    @thread = Thread.new { server.run }
+    sleep 0.02 until File.socket?(@socket)
+
+    reply = Wrangle::SessionClient.new(@socket).call("observe")
+
+    refute reply["ok"]
+    assert_equal "NoMethodError", reply["class"]
+    assert_match(/internal error/, reply["error"])
+    assert reply["terminal"], "the session is suspect after a bug, so it does not pretend otherwise"
+  end
+
+  # --- the options the server is started with --------------------------------------------------
+
+  # The MCP backend drives its own automation tab, so there is no window of yours for it to take
+  # over. Saying so beats opening something the caller did not ask for.
+  def test_attaching_with_the_mcp_backend_is_refused_before_anything_is_started
+    server = Wrangle::SessionServer.new(@socket, { "backend" => "mcp", "window_id" => 4242 })
+
+    error = assert_raises(ArgumentError) { server.send(:start_session) }
+
+    assert_match(/cannot attach/, error.message)
+  end
+
+  def test_the_backend_is_reported_as_the_one_that_was_asked_for
+    session = dedicated
+    server = Wrangle::SessionServer.new(@socket, { "backend" => "mcp" }, session: session)
+    @thread = Thread.new { server.run }
+    sleep 0.02 until File.socket?(@socket)
+
+    assert_equal "mcp", Wrangle::SessionClient.new(@socket).call("status").dig("value", "backend")
+  end
+
+  def test_the_socket_path_follows_the_home_the_caller_set
+    original = ENV.fetch("WRANGLE_HOME", nil)
+    ENV["WRANGLE_HOME"] = "/tmp/wrangle-home-test"
+
+    assert_equal "/tmp/wrangle-home-test/work.sock", Wrangle::SessionServer.socket_path("work")
+  ensure
+    ENV["WRANGLE_HOME"] = original
+  end
+
+  # --- the protocol itself -----------------------------------------------------------------------
+
+  # A connection that opens and says nothing is a port scan, a dropped client, or a health check.
+  # The server closes it and carries on; anything else lets a stray connection end the session.
+  def test_a_connection_that_says_nothing_is_dropped_without_ending_the_session
+    client = serving
+    UNIXSocket.new(@socket).close
+
+    assert_equal "dedicated", client.call("status").dig("value", "mode")
+  end
+
+  def test_a_line_that_is_not_json_is_refused_without_ending_the_session
+    client = serving
+    socket = UNIXSocket.new(@socket)
+    socket.puts("this is not json")
+    reply = JSON.parse(socket.gets)
+    socket.close
+
+    refute reply["ok"]
+    assert_equal "dedicated", client.call("status").dig("value", "mode")
   end
 
   def test_text_is_returned_whole_for_the_caller_to_filter

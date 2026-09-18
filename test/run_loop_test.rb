@@ -292,6 +292,63 @@ class RunLoopTest < Minitest::Test
     assert_empty executed(value)
   end
 
+  # --- proving the outcome -----------------------------------------------------------------------
+
+  # A plan that says what success looks like gets checked against the page rather than against the
+  # model's own report of itself. This is the difference between "it says it is done" and "it is".
+  def test_a_run_told_what_to_look_for_reports_whether_it_is_there
+    client = serving([{ operation: "CLICK", target: CLICK, confidence: 0.9 },
+                      { operation: "DONE", confidence: 0.9 }])
+
+    value = run_plan(client, plan: ["Press the button"], expect: "1 places")
+
+    assert_equal "1 places", value["expected"]
+    assert value["proven"], "the page says it, so the run should say so too"
+  end
+
+  def test_a_run_whose_outcome_never_appeared_says_so
+    client = serving([{ operation: "CLICK", target: CLICK, confidence: 0.9 },
+                      { operation: "DONE", confidence: 0.9 }])
+
+    value = run_plan(client, plan: ["Press the button"], expect: "no such text anywhere")
+
+    refute value["proven"]
+  end
+
+  # Nothing to look for is not the same as looked and found nothing.
+  def test_a_run_with_nothing_to_look_for_claims_neither
+    client = serving([{ operation: "DONE", confidence: 0.9 }])
+
+    value = run_plan(client, plan: ["Do nothing"])
+
+    assert_nil value["proven"]
+    assert_nil value["expected"]
+  end
+
+  # Finding it ends the run: there is nothing left to do, whatever the plan still has in it.
+  def test_finding_what_it_was_told_to_look_for_ends_the_run_early
+    client = serving([{ operation: "CLICK", target: CLICK, confidence: 0.9 },
+                      { operation: "CLICK", target: CLICK, confidence: 0.9 }])
+
+    value = run_plan(client, plan: ["Press the button", "Then do more"], expect: "1 places")
+
+    assert_equal 1, executed(value).length
+    assert value["proven"]
+  end
+
+  # --- circling ----------------------------------------------------------------------------------
+
+  # Clicking the same control three times is a loop whether or not the page moves underneath it.
+  # The budget would eventually stop it; stopping when it starts circling is cheaper and clearer.
+  def test_choosing_the_same_action_three_times_running_stops_the_leg
+    turns = Array.new(6) { { operation: "CLICK", target: CLICK, confidence: 0.9 } }
+    client = serving(turns)
+
+    value = run_plan(client, plan: ["Press the button"], leg_steps: 6, steps: 12)
+
+    assert_equal 3, executed(value).length, "it should stop once it notices it is circling"
+  end
+
   # --- watching the page while Jev thinks ------------------------------------------------------
 
   # The settle used to run before the request and the two were paid one after the other, which is

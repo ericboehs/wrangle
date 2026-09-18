@@ -21,7 +21,9 @@ ACTIONS = [
   { "id" => "a2", "kind" => "select", "node" => 3, "role" => "combobox", "label" => "Category → Design",
     "value" => "Design" },
   { "id" => "a3", "kind" => "click", "node" => 2, "role" => "button", "label" => "Find stays" },
-  { "id" => "a4", "kind" => "scroll", "delta" => 400, "label" => "Scroll down" }
+  { "id" => "a4", "kind" => "scroll", "delta" => 400, "label" => "Scroll down" },
+  # snapshot.js offers this on every page, so a fake that never does is not the page that ships.
+  { "id" => "wait", "kind" => "wait", "label" => "Wait for the page to update" }
 ].freeze
 
 class Refusal < StandardError
@@ -37,6 +39,14 @@ class Silence < StandardError; end
 
 # The parts of page.js that matter to the Ruby side.
 class Page
+  # A page can offer an action Wrangle cannot carry out: a select with no value, a scroll of zero, a
+  # control whose node never reached the snapshot. Those are refused on the way out rather than
+  # dispatched and hoped for, so a fake has to be able to offer them.
+  class << self
+    attr_accessor :extra
+  end
+  self.extra = []
+
   attr_accessor :epoch, :act
   attr_reader :url
 
@@ -55,11 +65,18 @@ class Page
   def state
     {
       "url" => @url, "title" => "Forma", "text" => @text,
-      "actions" => ACTIONS.map(&:dup), "scroll" => { "y" => @scroll, "height" => PAGE_HEIGHT },
+      "actions" => ACTIONS.map(&:dup) + Page.extra.map(&:dup), "scroll" => { "y" => @scroll, "height" => PAGE_HEIGHT },
       "marker" => "m-#{@revision}", "page_key" => PAGE_KEY,
       "guards" => { "1" => guard_for("g1-#{@revision}"), "2" => guard_for("g2"),
                     "3" => guard_for("g3-#{@revision}") }
     }
+  end
+
+  # A settle watches the fingerprint, and the fingerprint is url, text, actions and scroll — not the
+  # marker. A drift that only bumped the revision would be invisible to the thing it is meant to test.
+  def drift!
+    @revision += 1
+    @text = "#{@text.sub(/ \(loading \d+\)\z/, "")} (loading #{@revision})"
   end
 
   def apply(action, text)
@@ -105,6 +122,7 @@ class FakeBridge
     @config = config
     @safari = FakeSafari.new(config)
     @reads = 0
+    @drifts = config["drifts"].to_i
     @scope_checks = 0
   end
 
@@ -174,6 +192,15 @@ class FakeBridge
     raise Refusal.new("bad_request", "eval needs a payload") unless request["payload"].is_a?(String)
     raise Refusal.new("bad_request", "Install the page scripts first") unless @safari.scripts
 
+    # What a page can hand back when a script is broken or a document is mid-swap: nothing at all,
+    # something that is not JSON, or JSON that is not the result shape the protocol promises.
+    case @config["page_result"]
+    when "missing" then return {}
+    when "unparsable" then return { "result" => "<!DOCTYPE html>" }
+    when "wrong_shape" then return { "result" => JSON.generate([1, 2, 3]) }
+    when "statusless" then return { "result" => JSON.generate({ "state" => {} }) }
+    end
+
     { "result" => JSON.generate(page_request(window, JSON.parse(request["payload"]))) }
   end
 
@@ -224,6 +251,9 @@ class FakeBridge
   def page_request(window, request)
     page = window["page"]
     if request["op"] == "install"
+      # A document that will not take the binding: the observe loop must give up rather than spin.
+      return { "status" => "install_failed" } if @config["install_fails"]
+
       page.epoch = request["epoch"]
       @reads = 0 # A fresh binding restarts the countdown a test asked for.
       return { "status" => "ok", "state" => page.state }
@@ -234,8 +264,18 @@ class FakeBridge
     page.epoch = nil if forget.is_a?(Integer) && @reads > forget
     return { "status" => "epoch_lost" } if page.epoch.nil? || page.epoch != request["epoch"]
 
+    # A page mid-load answers its own ops with something other than "ok", and a freshness check that
+    # reads that as "unchanged" would wave through a decision about a document that is not there yet.
+    return { "status" => "loading" } if request["op"] == @config["loading_on"]
+
     case request["op"]
-    when "observe" then { "status" => "ok", "state" => page.state }
+    when "observe"
+      # A page that keeps changing for a few reads and then stops, which is what a settle is for:
+      # a results list arriving, a price rendering, a banner pushing the page down.
+      page.drift! if @drifts.positive? && (@drifts -= 1) >= 0
+      # A snapshot missing a key the protocol promises is not an observation, however well it parses.
+      state = @config["incomplete_state"] ? page.state.tap { _1.delete("actions") } : page.state
+      { "status" => "ok", "state" => state }
     when "marker" then { "status" => "ok", "marker" => page.state["marker"] }
     when "guard" then { "status" => "ok", "guard" => guard_reply(page, request["node"]) }
     when "probe" then { "status" => "ok", "act" => page.act }
@@ -258,6 +298,7 @@ class FakeBridge
     when "forgotten_then_silent" then page.act = nil
                                       raise Silence
     when "unconfirmed" then { "status" => "dispatched" }
+    when "nonsense" then { "status" => "confused" }
     else
       page.apply(request["action"], request["text"])
       page.act = { "nonce" => nonce, "phase" => "finished" }
@@ -267,6 +308,7 @@ class FakeBridge
 end
 
 config = ENV["FAKE_BRIDGE_CONFIG"] ? JSON.parse(File.read(ENV["FAKE_BRIDGE_CONFIG"])) : {}
+Page.extra = Array(config["extra_actions"])
 bridge = FakeBridge.new(config)
 $stdout.sync = true
 
@@ -283,6 +325,16 @@ $stdin.each_line do |line|
 
   if op == config["garbage_on"]
     puts "this is not json"
+    next
+  end
+  # A line too long to hold, and a reply that parses but is not a response object. Both are things a
+  # real bridge can emit when a page is enormous or a script returns the wrong thing.
+  if op == config["oversized_on"]
+    puts("x" * (4_000_000 + 1)) # JxaBridge::MAX_LINE_BYTES, which this process cannot see.
+    next
+  end
+  if op == config["nonobject_on"]
+    puts JSON.generate([1, 2, 3])
     next
   end
   puts JSON.generate({ "id" => 0, "ok" => true, "value" => {} }) if op == config["stale_reply_on"]

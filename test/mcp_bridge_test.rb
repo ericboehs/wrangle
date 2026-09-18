@@ -209,6 +209,57 @@ class McpBridgeTest < Minitest::Test
     assert_raises(Wrangle::BridgeError) { made.evaluate(scope, { "op" => "observe" }) }
   end
 
+  # --- the rest of the operation table -----------------------------------------------------------
+
+  # Every other backend starts lazily, and a caller that has a bridge should not have to know which
+  # one it is holding.
+  def test_a_request_starts_the_server_if_nobody_did
+    made = bridge
+
+    assert made.request("ping")["ok"]
+    assert_includes rpc_calls.map { _1["method"] }, "initialize"
+  end
+
+  def test_evaluating_starts_the_server_too
+    made = bridge
+    made.request("open", url: "https://fixture.test/stays")
+
+    assert_equal "ok", made.evaluate(scope, { "op" => "observe" })["status"]
+  end
+
+  def test_an_operation_with_no_rule_at_all_is_refused_by_name
+    error = assert_raises(Wrangle::BridgeCallError) { bridge.request("teleport") }
+
+    assert_equal "unsupported", error.code
+    assert_match(/does not support "teleport"/, error.message)
+  end
+
+  # --- closing the tab -----------------------------------------------------------------------------
+
+  def test_closing_a_tab_that_was_never_opened_closes_nothing
+    made = bridge
+    made.start
+
+    refute made.request("close")["closed"]
+    refute_includes rpc_calls.map { _1.dig("params", "name") }, "close_tab"
+  end
+
+  def test_closing_an_open_tab_closes_it_once
+    made = opened
+
+    assert made.request("close")["closed"]
+    refute made.request("close")["closed"], "the handle is spent, so there is nothing left to close"
+    assert_equal 1, rpc_calls.count { _1.dig("params", "name") == "close_tab" }
+  end
+
+  # A tab list that parses but is not a list is not a list of tabs.
+  def test_a_tab_list_that_is_not_a_list_is_reported_as_no_tabs
+    made = bridge(tab_list_not_an_array: true)
+    made.start
+
+    assert_empty made.request("windows")["windows"]
+  end
+
   def test_closing_twice_is_harmless
     made = bridge
     made.start

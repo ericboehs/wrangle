@@ -42,6 +42,8 @@ module Wrangle
 
       Common options: --session NAME (default "default"), --json, --all, --settle SECONDS
 
+      wrangle --version | wrangle --help
+
       Exit codes: 0 ok, 2 usage, 3 stale (observe and retry), 4 session over, 5 unavailable.
     TEXT
 
@@ -64,7 +66,7 @@ module Wrangle
       when "close" then close(options)
       when "__serve" then serve(argv)
       when nil, "help", "-h", "--help" then puts(USAGE_TEXT) || OK
-      when "version" then puts(Wrangle::VERSION) || OK
+      when "version", "-v", "--version" then puts(Wrangle::VERSION) || OK
       else warn("unknown command: #{command}\n\n#{USAGE_TEXT}") || USAGE
       end
     rescue Wrangle::Error => e

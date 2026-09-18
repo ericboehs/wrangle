@@ -75,6 +75,22 @@ class SafariTest < Minitest::Test
     assert_empty traced("open")
   end
 
+  # The ambiguity is real but it is the caller's to accept, and safaridriver leaves extra processes
+  # behind whether or not anyone wanted them.
+  def test_the_second_safari_process_can_be_accepted_deliberately
+    session = track(Wrangle::Safari.new(url: FIXTURE_URL, display: 1, allow_multiple_safari: true,
+                                        bridge: bridge(safari_instances: 2)))
+
+    assert_equal FIXTURE_URL, session.observe["url"]
+  end
+
+  # A ping that says nothing about instances is not a ping that says there are two.
+  def test_a_ping_without_an_instance_count_is_not_treated_as_a_conflict
+    session = dedicated(safari_instances: nil)
+
+    assert_equal FIXTURE_URL, session.observe["url"]
+  end
+
   def test_a_scope_change_ends_the_session_rather_than_finding_another_window
     # The window this session opened gains a tab: the user has reclaimed it, so the session stops.
     session = dedicated(grow_tabs_after: 2)
@@ -178,6 +194,18 @@ class SafariTest < Minitest::Test
     assert_equal "The document was replaced. Observe again.", error.message
   end
 
+  # A status nobody wrote a rule for is the one case where Wrangle cannot know whether the page was
+  # touched. It refuses to guess, and the session is over rather than quietly wrong.
+  def test_an_unrecognised_outcome_poisons_the_session_rather_than_being_guessed_at
+    session = dedicated(act: "nonsense")
+    page = session.observe
+
+    error = assert_raises(Wrangle::DeliveryUnknown) { session.act(find(page, "Find stays"), page) }
+
+    assert_match(/"confused"/, error.message)
+    assert_raises(Wrangle::Error) { session.observe }
+  end
+
   # --- delivery ------------------------------------------------------------------------------
 
   def test_an_unconfirmed_action_poisons_the_session
@@ -215,6 +243,190 @@ class SafariTest < Minitest::Test
     error = assert_raises(Wrangle::Error) { session.act(find(page, "Find stays"), page) }
     assert_match(/never executed/, error.message)
     assert_equal FIXTURE_URL, session.observe["url"] # Nothing landed, so the session stays usable.
+  end
+
+  # --- actions the page offers but Wrangle will not dispatch -----------------------------------
+
+  # Every one of these is a real action on a real observation, so the "was it observed" gate lets it
+  # through. They are refused because they cannot be carried out, and refusing beats dispatching a
+  # select with no value and hoping the page picks something.
+  def test_an_offered_action_that_cannot_be_carried_out_is_refused_not_attempted
+    broken = [
+      { "id" => "x1", "kind" => "select", "node" => 3, "label" => "Sort by", "value" => nil },
+      { "id" => "x2", "kind" => "scroll", "delta" => 0, "label" => "Scroll nowhere" },
+      { "id" => "x3", "kind" => "click", "node" => "two", "label" => "Unnumbered button" },
+      { "id" => "x4", "kind" => "teleport", "node" => 2, "label" => "Go somewhere" }
+    ]
+    session = dedicated(extra_actions: broken)
+    page = session.observe
+
+    broken.each do |action|
+      assert_raises(ArgumentError, "#{action["label"]} should not be dispatched") do
+        session.act(find(page, action["label"]), page)
+      end
+    end
+    assert_empty page_ops.select { |op| op["op"] == "act" }
+  end
+
+  def test_text_belongs_to_a_fill_and_to_nothing_else
+    session = dedicated
+    page = session.observe
+
+    assert_raises(ArgumentError) { session.act(find(page, "Find stays"), page, text: "unwanted") }
+    assert_raises(ArgumentError) { session.act(find(page, "Destination"), page, text: "") }
+  end
+
+  # --- waiting -------------------------------------------------------------------------------
+
+  # Waiting is an action the model can choose, so it goes through the same gate as a click: it is
+  # matched against the observation, and it reports back like anything else. It touches nothing.
+  def test_waiting_is_an_action_and_changes_nothing
+    session = dedicated
+    page = session.observe
+
+    result = session.act(find(page, "Wait for the page to update"), page)
+
+    assert_equal "wait", result["executed"]
+    assert_empty page_ops.select { |op| op["op"] == "act" }
+    assert_equal page["marker"], session.observe["marker"]
+  end
+
+  # --- refusing when the page cannot answer ----------------------------------------------------
+
+  # A page mid-load answers a freshness check with something that is not "ok". Reading that as
+  # "nothing changed" would wave a decision through against a document that is not there yet.
+  def test_a_page_that_cannot_answer_is_not_treated_as_unchanged
+    guarded = dedicated(loading_on: "guard")
+    page = guarded.observe
+
+    assert_equal "The page is still loading", guarded.moved(page, find(page, "Find stays"))
+
+    # Targetless actions ask the whole page instead, and it can be mid-load too.
+    markered = dedicated(loading_on: "marker")
+    other = markered.observe
+
+    assert_equal "The page is still loading", markered.moved(other, find(other, "Wait for the page to update"))
+  end
+
+  def test_an_action_whose_target_was_never_numbered_is_refused
+    session = dedicated
+    page = session.observe
+
+    assert_equal "The target was never observed", session.moved(page, { "kind" => "click", "node" => "seven" })
+  end
+
+  # Two different unreadable payloads, two different readings. A missing guard means the element it
+  # described is not there any more, which is worth saying; a guard that is present but the wrong
+  # shape is not something to interpret, so it counts as a change and the decision is retaken.
+  def test_an_unreadable_guard_counts_as_a_change
+    session = dedicated
+    page = session.observe
+    action = find(page, "Find stays")
+
+    assert_equal "The target is gone", session.moved(page.merge("guards" => {}), action)
+    assert_equal "The page changed", session.moved(page.merge("guards" => { "2" => "not a hash" }), action)
+    assert_equal "The page changed", session.moved(page.merge("page_key" => "not a hash"), action)
+  end
+
+  def test_a_page_that_has_not_moved_is_fresh
+    session = dedicated
+    page = session.observe
+
+    assert session.fresh?(page, find(page, "Find stays"))
+    assert session.fresh?(page)
+    assert_nil session.moved(page)
+  end
+
+  # --- the block form ------------------------------------------------------------------------
+
+  # Scope is the safety boundary, and the block form is the version of it that cannot be forgotten.
+  def test_a_block_gets_the_session_and_the_window_is_closed_after_it
+    session = nil
+    Wrangle::Safari.open(FIXTURE_URL, display: 1, bridge: bridge) do |opened|
+      session = opened
+
+      assert_equal FIXTURE_URL, opened.observe["url"]
+    end
+
+    assert traced("close").first["owned"], "the window it opened should have been closed"
+    assert_raises(Wrangle::Error) { session.observe }
+  end
+
+  # An exception is exactly when a window is most likely to be left behind.
+  def test_the_window_is_closed_even_when_the_block_raises
+    session = nil
+    assert_raises(RuntimeError) do
+      Wrangle::Safari.open(FIXTURE_URL, display: 1, bridge: bridge) do |opened|
+        session = opened
+        raise "the caller fell over"
+      end
+    end
+
+    assert traced("close").first["owned"], "an exception is when a window is most likely left behind"
+    assert_raises(Wrangle::Error) { session.observe }
+  end
+
+  def test_attach_without_a_block_returns_the_session
+    windows = [{ url: FIXTURE_URL, window_id: 4242, tabs: 5 }]
+    session = track(Wrangle::Safari.attach(window_id: 4242, url: FIXTURE_URL, bridge: bridge(windows: windows)))
+
+    assert_equal "attach", session.mode
+    assert_equal 4242, session.window_id
+    assert_empty traced("close")
+  end
+
+  def test_without_a_block_the_session_is_returned_and_left_open
+    session = track(Wrangle::Safari.open(FIXTURE_URL, display: 1, bridge: bridge))
+
+    assert_equal "dedicated", session.mode
+    assert_equal FIXTURE_URL, session.observe["url"]
+    assert_empty traced("close")
+  end
+
+  def test_attach_takes_a_block_too_and_hands_back_a_window_it_does_not_own
+    windows = [{ url: FIXTURE_URL, window_id: 4242, tabs: 5 }]
+    handled = nil
+    Wrangle::Safari.attach(window_id: 4242, url: FIXTURE_URL, bridge: bridge(windows: windows)) do |session|
+      handled = session
+
+      assert_equal "attach", session.mode
+      assert_equal 4242, session.window_id
+    end
+
+    # Handed back, not closed: it was never Wrangle's window to close.
+    assert_empty traced("close")
+    assert_raises(Wrangle::Error) { handled.observe }
+  end
+
+  # --- observations the page cannot make -------------------------------------------------------
+
+  # Every field is load-bearing somewhere downstream. A snapshot missing one parses perfectly well
+  # and then fails much further away, so it is refused here.
+  def test_a_snapshot_missing_a_promised_key_is_not_an_observation
+    session = dedicated(incomplete_state: true)
+
+    error = assert_raises(Wrangle::BridgeError) { session.observe }
+
+    assert_match(/incomplete observation/, error.message)
+  end
+
+  # A document that will not take the binding is a document that cannot be worked on. The loop gives
+  # up at its deadline rather than spinning against a page that will never answer.
+  def test_a_document_that_will_not_bind_gives_up_instead_of_spinning
+    session = dedicated(install_fails: true)
+
+    assert_raises(Wrangle::StalePage) { session.observe }
+  end
+
+  # --- what a targetless action is checked against ---------------------------------------------
+
+  def test_a_targetless_action_notices_the_whole_page_moving
+    session = dedicated
+    page = session.observe
+    session.act(find(page, "Find stays"), page) # Anything at all, so the marker moves.
+
+    assert_equal "The page changed", session.moved(page, find(page, "Wait for the page to update"))
+    assert_equal "The page changed", session.moved(page)
   end
 
   # --- construction --------------------------------------------------------------------------

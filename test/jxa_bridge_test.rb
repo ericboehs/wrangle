@@ -94,6 +94,72 @@ class JxaBridgeTest < Minitest::Test
     active&.close
   end
 
+  # --- what a page can hand back ---------------------------------------------------------------
+
+  # The page's reply crosses two encodings and a process boundary, so "it parsed" is not the same as
+  # "it is a result". Each of these is a different way for a broken script to look like an answer.
+  def test_a_page_result_that_is_not_a_usable_result_is_refused
+    { "missing" => /no page result/, "unparsable" => /invalid JSON/,
+      "wrong_shape" => /invalid result/, "statusless" => /invalid result/ }.each do |mode, message|
+      active = started(page_result: mode)
+      window = active.request("open", url: BridgeHelpers::FIXTURE_URL)
+      active.request("scripts", page: "// page", snapshot: "// snapshot")
+      scope = { "window_id" => window["window_id"], "tab_index" => 1 }
+
+      error = assert_raises(Wrangle::BridgeError) { active.evaluate(scope, { "op" => "observe" }) }
+
+      assert_match(message, error.message, "page_result: #{mode}")
+      active.close
+    end
+  end
+
+  # --- lines the bridge should not accept ---------------------------------------------------
+
+  # A page big enough to blow the line limit is a page that cannot be trusted to have arrived whole.
+  def test_an_oversized_line_is_refused_rather_than_held
+    active = started(oversized_on: "windows")
+
+    error = assert_raises(Wrangle::BridgeError) { active.request("windows") }
+
+    assert_match(/oversized/, error.message)
+  end
+
+  def test_a_reply_that_is_not_an_object_is_refused
+    active = started(nonobject_on: "windows")
+
+    error = assert_raises(Wrangle::BridgeError) { active.request("windows") }
+
+    assert_match(/non-object/, error.message)
+  end
+
+  # --- the closed and unstarted states --------------------------------------------------------
+
+  def test_a_bridge_that_was_never_started_refuses_work_and_is_not_running
+    idle = bridge
+
+    refute_predicate idle, :running?
+    error = assert_raises(Wrangle::BridgeError) { idle.request("windows") }
+
+    assert_match(/not started/, error.message)
+  end
+
+  def test_a_closed_bridge_refuses_work
+    active = started
+    active.close
+
+    refute_predicate active, :running?
+    error = assert_raises(Wrangle::BridgeError) { active.request("windows") }
+
+    assert_match(/closed/, error.message)
+  end
+
+  def test_closing_a_bridge_that_was_never_started_is_not_an_error
+    idle = bridge
+    idle.close
+
+    assert_raises(Wrangle::BridgeError) { idle.request("windows") }
+  end
+
   def test_window_and_display_listings_use_a_supplied_bridge
     active = started(windows: [{ url: BridgeHelpers::FIXTURE_URL, window_id: 77 }])
     assert_equal 1920, Wrangle::Safari.displays(bridge: active)[1]["width"]

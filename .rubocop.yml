@@ -31,13 +31,11 @@ Metrics/CyclomaticComplexity:
     - "exe/wrangle"
 Metrics/PerceivedComplexity:
   Max: 15
-# SessionServer is the socket protocol and the decision loop in one long-lived object. The loop needs
-# the session, the page, and the history that the protocol already holds.
-# This has now been raised twice. The next time it does not fit, split it rather than raise it again:
-# the decision loop (run_goal/run_leg/attempt/advance and the confidence rules) is a coherent object
-# that only needs somewhere to observe, act, and settle.
+# SessionServer is the socket protocol plus the small surface the run loop is allowed to ask for.
+# The decision loop itself now lives in RunLoop; this was raised twice before that split and should
+# be lowered, not raised, from here.
 Metrics/ClassLength:
-  Max: 375
+  Max: 300
   Exclude:
     - "test/**/*.rb"
 Metrics/BlockLength:

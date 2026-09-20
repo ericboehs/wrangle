@@ -23,7 +23,13 @@ module Wrangle
 
       One-shot:
         wrangle windows [--titles]        list Safari windows
-        wrangle displays                  list displays in AppleScript window coordinates
+        wrangle windows --app APP         list scoped macOS window ids without titles
+        wrangle displays [--driver macos] list displays in top-left window coordinates
+        wrangle doctor                    check macOS driver capabilities and permissions
+        wrangle task --app APP --goal GOAL
+                                          complete one bounded native desktop task
+        wrangle qualify --provider NAME   run the provider conformance suite and emit a receipt
+                         [--suite PATH] [--output PATH]
 
       Decide with Jev (needs JEV_API_KEY):
         wrangle decide --goal "..."        propose one action; changes nothing
@@ -33,12 +39,26 @@ module Wrangle
         wrangle open <url> [--display N]  open a window Wrangle owns
                           [--side left]   park it on half a display
                           [--backend mcp] drive safaridriver's own tab instead of Apple Events
-        wrangle attach <window_id>        take over a window you already have open
+        wrangle attach <window_id>        take over a Safari window you already have open
+        wrangle attach --app APP <w-id>   scope one macOS application window
+                       [--frontmost 3]     take the front window after a countdown
+                       [--pick]            choose one listed application window
+                       [--cooperative]     permit another session on the same root
         wrangle observe [--match RE]      look; lists numbered actions
-        wrangle act <ref> [--text STR]    do one action, and report what changed
+        wrangle drill <ref>               expand one observed progressive branch
+        wrangle inspect                   pull the full latest machine observation
+        wrangle preview <ref> [--operation OP] [--text STR]
+                                          bind an action to the current revision
+        wrangle preview --goal GOAL [--literal NAME=VALUE]
+                                          let the explicit provider propose an action
+        wrangle execute <proposal_id> [--approve]
+                                          revalidate and dispatch the proposal once
+        wrangle continue <run_id>         continue authorized safe actions within budget
+        wrangle act <ref> [--text STR]    do one Safari action, and report what changed
         wrangle text [--match RE]         print the page text
         wrangle status
-        wrangle close
+        wrangle stop                     emergency-stop without application focus
+        wrangle close                    release control; attached app windows stay open
 
       Common options: --session NAME (default "default"), --json, --all, --settle SECONDS
 
@@ -55,16 +75,24 @@ module Wrangle
       case command
       when "windows" then windows(options)
       when "displays" then displays(options)
+      when "doctor", "qualify", "task" then public_send(command, options)
       when "open" then start({ "url" => argv.first }, options)
-      when "attach" then start({ "window_id" => Integer(argv.first, exception: false) }, options)
+      when "attach" then attach(argv.first, options)
       when "observe" then observe(options)
+      when "drill" then drill(argv.first, options)
+      when "inspect" then inspect(options)
+      when "preview" then preview(argv.first, options)
+      when "execute" then execute(argv.first, options)
+      when "continue" then continue_run(argv.first, options)
       when "act" then act(argv.first, options)
       when "text" then text(options)
       when "decide" then propose(argv, options, execute: false)
       when "run" then propose(argv, options, execute: true)
       when "status" then status(options)
+      when "stop" then stop(options)
       when "close" then close(options)
       when "__serve" then serve(argv)
+      when "__serve_macos" then serve_macos(argv)
       when nil, "help", "-h", "--help" then puts(USAGE_TEXT) || OK
       when "version", "-v", "--version" then puts(Wrangle::VERSION) || OK
       else warn("unknown command: #{command}\n\n#{USAGE_TEXT}") || USAGE
@@ -76,28 +104,51 @@ module Wrangle
 
     def parse(argv)
       options = { session: "default", settle: nil, json: false, all: false, match: nil }
-      OptionParser.new do |o|
-        o.on("--session NAME") { |v| options[:session] = v }
-        o.on("--display N", Integer) { |v| options[:display] = v }
-        o.on("--side SIDE") { |v| options[:side] = v }
-        o.on("--backend NAME") { |v| options[:backend] = v }
-        o.on("--steady MS", Float) { |v| options[:steady] = v / 1000.0 }
-        o.on("--plan GOAL") { |v| (options[:plan] ||= []) << v }
-        o.on("--leg-steps N", Integer) { |v| options[:leg_steps] = v }
-        o.on("--text STR") { |v| options[:text] = v }
-        o.on("--match RE") { |v| options[:match] = v }
-        o.on("--settle S", Float) { |v| options[:settle] = v }
-        o.on("--goal STR") { |v| options[:goal] = v }
-        o.on("--literal PAIR") { |v| (options[:literals] ||= {}).store(*v.split("=", 2)) }
-        o.on("--steps N", Integer) { |v| options[:steps] = v }
-        o.on("--min-confidence F", Float) { |v| options[:min_confidence] = v }
-        o.on("--execute") { options[:execute] = true }
-        o.on("--expect RE") { |v| options[:expect] = v }
-        o.on("--titles") { options[:titles] = true }
-        o.on("--all") { options[:all] = true }
-        o.on("--json") { options[:json] = true }
-      end.parse!(argv)
+      parser = OptionParser.new
+      scope_options(parser, options)
+      run_options(parser, options)
+      parser.parse!(argv)
       options
+    end
+
+    def scope_options(parser, options)
+      parser.on("--session NAME") { |v| options[:session] = v }
+      parser.on("--display N", Integer) { |v| options[:display] = v }
+      parser.on("--side SIDE") { |v| options[:side] = v }
+      parser.on("--backend NAME") { |v| options[:backend] = v }
+      parser.on("--driver NAME") { |v| options[:driver] = v }
+      parser.on("--app APP") { |v| options[:app] = v }
+      parser.on("--frontmost [SECONDS]", Float) { |v| options[:frontmost] = v || 3.0 }
+      parser.on("--pick") { options[:pick] = true }
+      parser.on("--cooperative") { options[:cooperative] = true }
+      parser.on("--provider NAME") { |v| options[:provider] = v }
+      parser.on("--provider-model NAME") { |v| options[:provider_model] = v }
+      parser.on("--provider-endpoint URL") { |v| options[:provider_endpoint] = v }
+      parser.on("--provider-trace PATH") { |v| options[:provider_trace] = v }
+      parser.on("--provider-qualification PATH") { |v| options[:provider_qualification] = v }
+      parser.on("--provider-max-choices N", Integer) { |v| options[:provider_max_choices] = v }
+      parser.on("--titles") { options[:titles] = true }
+      parser.on("--all") { options[:all] = true }
+      parser.on("--json") { options[:json] = true }
+    end
+
+    def run_options(parser, options)
+      parser.on("--steady MS", Float) { |v| options[:steady] = v / 1000.0 }
+      parser.on("--plan GOAL") { |v| (options[:plan] ||= []) << v }
+      parser.on("--leg-steps N", Integer) { |v| options[:leg_steps] = v }
+      parser.on("--text STR") { |v| options[:text] = v }
+      parser.on("--operation OP") { |v| options[:operation] = v }
+      parser.on("--approve") { options[:approve] = true }
+      parser.on("--match RE") { |v| options[:match] = v }
+      parser.on("--settle S", Float) { |v| options[:settle] = v }
+      parser.on("--goal STR") { |v| options[:goal] = v }
+      parser.on("--literal PAIR") { |v| (options[:literals] ||= {}).store(*v.split("=", 2)) }
+      parser.on("--steps N", Integer) { |v| options[:steps] = v }
+      parser.on("--min-confidence F", Float) { |v| options[:min_confidence] = v }
+      parser.on("--execute") { options[:execute] = true }
+      parser.on("--expect RE") { |v| options[:expect] = v }
+      parser.on("--suite PATH") { |v| options[:suite] = v }
+      parser.on("--output PATH") { |v| options[:output] = v }
     end
 
     def client(options) = SessionClient.new(SessionServer.socket_path(options[:session]))
@@ -105,6 +156,8 @@ module Wrangle
     # --- one-shot ------------------------------------------------------------------------------
 
     def windows(options)
+      return macos_windows(options) if options[:app]
+
       listed = Wrangle::Safari.windows(titles: options[:titles])
       return emit(listed) if options[:json]
 
@@ -117,8 +170,27 @@ module Wrangle
       OK
     end
 
+    def macos_windows(options)
+      listed = Wrangle::MacOSHelper.new.windows(app: options[:app], titles: options[:titles])
+      return emit(listed) if options[:json]
+
+      listed.each do |window|
+        bounds = window.fetch("bounds")
+        mark = window["focused"] ? "front" : ""
+        line = format("%-12s %-18s %5d,%5d %4dx%-4d %s", window["id"], window["app_name"],
+                      bounds["x"], bounds["y"], bounds["width"], bounds["height"], mark)
+        line += "  #{window["title"]}" if options[:titles]
+        puts line.rstrip
+      end
+      OK
+    end
+
     def displays(options)
-      listed = Wrangle::Safari.displays
+      listed = if options[:driver] == "macos"
+                 Wrangle::MacOSHelper.new.displays.map { |display| display.fetch("bounds") }
+               else
+                 Wrangle::Safari.displays
+               end
       return emit(listed) if options[:json]
 
       listed.each_with_index do |display, index|
@@ -128,14 +200,167 @@ module Wrangle
       OK
     end
 
+    def doctor(options)
+      driver = Wrangle::MacOSDriver.new
+      report = driver.doctor
+      return emit(report) if options[:json]
+
+      puts "macOS           #{report["platform"] || "unavailable"}"
+      puts "ready           #{report["ready"]}"
+      if report["driver"]
+        puts "driver          #{report["driver"]}"
+        puts "display source  #{report.dig("capabilities", "display_inventory")}"
+      else
+        puts "error           #{report["error"]}"
+      end
+      report["ready"] ? OK : UNAVAILABLE
+    ensure
+      driver&.close
+    end
+
+    TASK_PROVIDER_ENV = {
+      "provider_model" => "WRANGLE_DESKTOP_PROVIDER_MODEL",
+      "provider_endpoint" => "WRANGLE_DESKTOP_PROVIDER_ENDPOINT",
+      "provider_trace" => "WRANGLE_DESKTOP_PROVIDER_TRACE",
+      "provider_qualification" => "WRANGLE_DESKTOP_PROVIDER_QUALIFICATION"
+    }.freeze
+
+    def task(options)
+      return warn("task needs --app APP and --goal GOAL") || USAGE if
+        options[:app].to_s.strip.empty? || options[:goal].to_s.strip.empty?
+
+      value = DesktopTask.new.run(
+        app: options[:app], goal: options[:goal], literals: options[:literals] || {},
+        steps: options[:steps] || DesktopTask::DEFAULT_STEPS,
+        min_confidence: options[:min_confidence] || 0.5,
+        concurrency: options[:cooperative] ? "cooperative" : "exclusive",
+        provider_options: task_provider_options(options)
+      )
+      return emit({ "ok" => true, "value" => value }) if options[:json]
+
+      puts value.fetch("message")
+      puts "status   #{value.fetch("status")}"
+      puts "actions  #{value.fetch("actions_taken")}"
+      OK
+    rescue Wrangle::Error, ArgumentError => e
+      task_failure(e, options)
+    end
+
+    def task_provider_options(options)
+      values = PROVIDER_OPTIONS.to_h { |key| [key.to_s, options[key]] }.compact
+      values["provider"] ||= ENV.fetch("WRANGLE_DESKTOP_PROVIDER", nil)
+      if values["provider"].to_s.empty?
+        raise ConfigurationError, "Set --provider or WRANGLE_DESKTOP_PROVIDER explicitly for desktop tasks"
+      end
+
+      TASK_PROVIDER_ENV.each do |key, environment|
+        values[key] ||= ENV.fetch(environment, nil)
+      end
+      values
+    end
+
+    def task_failure(error, options)
+      reply = { "ok" => false, "class" => error.class.name.split("::").last, "error" => error.message,
+                "terminal" => true, "retryable" => false }
+      return emit(reply) if options[:json]
+
+      warn "#{reply["class"]}: #{reply["error"]}"
+      UNAVAILABLE
+    end
+
+    def qualify(options)
+      return warn("qualify needs --provider replay or jev") || USAGE if options[:provider].to_s.empty?
+
+      suite = options[:suite] || ProviderQualification::DEFAULT_SUITE
+      provider_options = PROVIDER_OPTIONS.to_h { |key| [key.to_s, options[key]] }.compact
+      provider_options["provider_trace"] ||= suite if options[:provider] == "replay"
+      provider = ProviderFactory.build(provider_options)
+      cases = ProviderQualification.load(suite)
+      report = ProviderQualification.run(provider, cases)
+      write_qualification(options[:output], report) if options[:output]
+      return emit(report) if options[:json]
+
+      puts "provider   #{report["provider"]}/#{report["model"]}"
+      puts "suite      #{report["suite_sha256"]}"
+      puts "passed     #{report["passed"]}/#{report["cases"]}"
+      puts "qualified  #{report["qualified"]}"
+      puts "receipt    #{options[:output]}" if options[:output]
+      report["qualified"] ? OK : TERMINAL
+    end
+
+    def write_qualification(path, report)
+      directory = File.dirname(File.expand_path(path))
+      FileUtils.mkdir_p(directory, mode: 0o700)
+      temporary = File.join(directory, ".#{File.basename(path)}.#{Process.pid}.tmp")
+      File.open(temporary, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+        file.write(JSON.pretty_generate(report))
+        file.write("\n")
+        file.flush
+        file.fsync
+      end
+      File.rename(temporary, path)
+    ensure
+      FileUtils.rm_f(temporary) if defined?(temporary)
+    end
+
     # --- session -------------------------------------------------------------------------------
 
+    def attach(identifier, options)
+      if options[:app] || options[:frontmost] || options[:pick]
+        chosen = choose_macos_window(identifier, options)
+        start({ "driver" => "macos", "window_id" => chosen["id"], "app" => chosen["app_name"] }, options)
+      else
+        start({ "window_id" => Integer(identifier, exception: false) }, options)
+      end
+    end
+
+    def choose_macos_window(identifier, options)
+      helper = Wrangle::MacOSHelper.new
+      if options[:frontmost]
+        warn "Select the window to hand over; capturing frontmost in #{options[:frontmost]}s"
+        sleep options[:frontmost]
+        chosen = helper.frontmost
+        if options[:app] && chosen["app_name"].to_s.casecmp?(options[:app]) == false
+          raise ScopeLost, "Frontmost window belongs to #{chosen["app_name"]}, not #{options[:app]}"
+        end
+
+        return chosen
+      end
+      return pick_macos_window(helper, options[:app]) if options[:pick]
+      raise ArgumentError, "macOS attach needs --app" unless options[:app]
+
+      { "id" => identifier, "app_name" => options[:app] }
+    end
+
+    def pick_macos_window(helper, app)
+      raise ArgumentError, "--pick requires --app" if app.to_s.empty?
+
+      windows = helper.windows(app:, titles: true)
+      raise ScopeLost, "No visible #{app} windows" if windows.empty?
+
+      windows.each_with_index do |window, index|
+        bounds = window.fetch("bounds")
+        puts format("%2d  %-12s %5d,%5d %4dx%-4d %s", index + 1, window["id"], bounds["x"], bounds["y"],
+                    bounds["width"], bounds["height"], window["title"].to_s[0, 60])
+      end
+      print "Window: "
+      selected = Integer($stdin.gets, exception: false)
+      unless selected&.between?(1, windows.length)
+        raise ArgumentError, "Choose a window number from 1 to #{windows.length}"
+      end
+
+      windows[selected - 1]
+    end
+
     def start(target, options)
-      return warn("open needs a url; attach needs a numeric window id") || USAGE if target.values.first.nil?
+      required = target["driver"] == "macos" ? target.values_at("window_id", "app") : [target.values.first]
+      return warn("open needs a url; attach needs a window id and --app for macOS") || USAGE if required.any?(&:nil?)
 
       socket = SessionServer.socket_path(options[:session])
       return warn("A session named #{options[:session].inspect} is already running.") || USAGE if
         SessionClient.new(socket).running?
+
+      return spawn_desktop(socket, target, options) if target["driver"] == "macos"
 
       backend = (options[:backend] || "jxa").to_s
       unless %w[jxa mcp].include?(backend)
@@ -150,6 +375,43 @@ module Wrangle
       spawn_server(socket, target.merge("display" => (bounds ? nil : options[:display]),
                                         "bounds" => bounds, "backend" => backend))
       observe(options)
+    end
+
+    PROVIDER_OPTIONS = %i[
+      provider provider_model provider_endpoint provider_trace provider_qualification provider_max_choices
+    ].freeze
+
+    def spawn_desktop(socket, target, options)
+      if options[:backend] || options[:display] || options[:side]
+        return warn("macOS attachment does not accept Safari backend or window-placement options") || USAGE
+      end
+
+      target["concurrency"] = options[:cooperative] ? "cooperative" : "exclusive"
+      PROVIDER_OPTIONS.each do |key|
+        target[key.to_s] = options[key] if options[key]
+      end
+      spawn_server(socket, target)
+      result = observe(options)
+      close_failed_desktop_session(options) unless result == OK
+      result
+    rescue StandardError
+      close_failed_desktop_session(options) if File.socket?(socket)
+      raise
+    end
+
+    def close_failed_desktop_session(options)
+      client(options).call("close")
+      await_session_shutdown(SessionServer.socket_path(options[:session]), 1)
+    rescue Error, SystemCallError
+      nil
+    end
+
+    def await_session_shutdown(socket, timeout)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+      while (File.socket?(socket) || File.exist?("#{socket}.pid")) &&
+            Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+        sleep 0.01
+      end
     end
 
     # Half a screen is the useful case: a window big enough to render a real page, parked where it is
@@ -176,9 +438,11 @@ module Wrangle
     def spawn_server(socket, target)
       log = File.join(File.dirname(socket), "#{File.basename(socket, ".sock")}.log")
       FileUtils.mkdir_p(File.dirname(socket))
-      pid = Process.spawn(RbConfig.ruby, __FILE__, "__serve", socket, JSON.generate(target),
+      command = target["driver"] == "macos" ? "__serve_macos" : "__serve"
+      pid = Process.spawn(RbConfig.ruby, __FILE__, command, socket, JSON.generate(target),
                           out: log, err: log, pgroup: true)
       Process.detach(pid)
+      File.write("#{socket}.pid", "#{pid}\n", mode: "w", perm: 0o600)
       await(socket, log)
     end
 
@@ -201,12 +465,107 @@ module Wrangle
       OK
     end
 
+    def serve_macos(argv)
+      DesktopSessionServer.run(argv[0], JSON.parse(argv[1]))
+      OK
+    end
+
     def observe(options)
       request(options, "observe", settle: options[:settle] || 0.0)
     end
 
+    def drill(ref, options)
+      return warn("drill needs an action number from the last observation") || USAGE unless ref&.match?(/\A\d+\z/)
+
+      request(options, "drill", ref: Integer(ref))
+    end
+
+    def inspect(options)
+      reply = client(options).call("inspect")
+      return emit(reply) if options[:json]
+      return failed(reply, options) unless reply["ok"]
+
+      puts JSON.pretty_generate(reply["value"])
+      OK
+    end
+
+    def preview(ref, options)
+      if options[:goal]
+        reply = client(options).call("preview", goal: options[:goal], literals: options[:literals] || {},
+                                                min_confidence: options[:min_confidence] || 0.5,
+                                                steps: options[:steps] || 8)
+        return show_desktop_decision(reply, options)
+      end
+      return warn("preview needs an action number or --goal") || USAGE unless ref&.match?(/\A\d+\z/)
+
+      reply = client(options).call("preview", ref: Integer(ref), operation: options[:operation], text: options[:text])
+      show_desktop_proposal(reply, options)
+    end
+
+    def show_desktop_decision(reply, options)
+      return emit(reply) if options[:json]
+      return failed(reply, options) unless reply["ok"]
+
+      decision = reply["value"]
+      puts "decision  #{decision["operation"]} (#{(decision["confidence"] * 100).round}% sure)"
+      puts "provider  #{decision["provider"]}/#{decision["model"]}"
+      puts "paused    #{decision["paused"]}" if decision["paused"]
+      return OK unless decision["proposal"]
+
+      show_proposal(decision["proposal"])
+      OK
+    end
+
+    def show_desktop_proposal(reply, options)
+      return emit(reply) if options[:json]
+      return failed(reply, options) unless reply["ok"]
+
+      show_proposal(reply["value"])
+      OK
+    end
+
+    def show_proposal(proposal)
+      operation = desktop_operation(proposal.dig("action", "operation"))
+      puts "ready    #{operation} #{proposal.dig("action", "label").inspect}"
+      puts "text     #{proposal.dig("action", "text", "characters")} exact characters" if
+        proposal.dig("action", "text")
+      puts "changed  nothing — preview only"
+      puts "next     wrangle execute #{proposal["proposal_id"]}"
+      puts "approval required before this consequential action" if proposal.dig("policy", "consequential")
+    end
+
+    def execute(proposal_id, options)
+      return warn("execute needs a proposal id") || USAGE if proposal_id.to_s.empty?
+
+      reply = client(options).call("execute", proposal_id:, approve: options[:approve] || false)
+      return emit(reply) if options[:json]
+      return failed(reply, options) unless reply["ok"]
+
+      receipt = reply["value"]
+      puts receipt_summary(receipt)
+      puts "continue  wrangle continue #{receipt["run_id"]}" if receipt["can_continue"]
+      return TERMINAL if receipt["terminal"]
+      return STALE if receipt["dispatch"] == "not_delivered"
+
+      receipt["dispatch"] == "refused" ? USAGE : OK
+    end
+
+    def continue_run(run_id, options)
+      return warn("continue needs a run id") || USAGE if run_id.to_s.empty?
+
+      reply = client(options).call("continue", run_id:)
+      return emit(reply) if options[:json]
+      return failed(reply, options) unless reply["ok"]
+
+      result = reply["value"]
+      puts "run       #{result["status"]} (#{result["remaining"]} actions remain)"
+      Array(result["receipts"]).each { |receipt| puts receipt_summary(receipt) }
+      show_proposal(result["proposal"]) if result["proposal"]
+      result["status"] == "terminal" ? TERMINAL : OK
+    end
+
     def act(ref, options)
-      return warn("act needs an action number from the last observation") || USAGE unless ref =~ /\A\d+\z/
+      return warn("act needs an action number from the last observation") || USAGE unless ref&.match?(/\A\d+\z/)
 
       request(options, "act", ref: Integer(ref), text: options[:text], settle: options[:settle] || 3.0)
     end
@@ -220,11 +579,34 @@ module Wrangle
       OK
     end
 
+    def stop(options)
+      socket = SessionServer.socket_path(options[:session])
+      pid_file = "#{socket}.pid"
+      pid = Integer(File.read(pid_file), exception: false) if File.file?(pid_file)
+      unless pid&.positive?
+        return warn("No stoppable wrangle session named #{options[:session].inspect}.") || UNAVAILABLE
+      end
+
+      Process.kill("INT", pid) # One signal. An in-flight mutation is never repeated.
+      await_session_shutdown(socket, 3)
+      puts "session stopped; any in-flight delivery must be treated as unknown"
+      OK
+    rescue Errno::ESRCH
+      FileUtils.rm_f(pid_file)
+      FileUtils.rm_f(socket)
+      warn("The session had already exited.") || UNAVAILABLE
+    end
+
     def close(options)
       reply = client(options).call("close")
+      await_session_shutdown(SessionServer.socket_path(options[:session]), 1)
       return emit(reply) if options[:json]
 
-      puts reply["ok"] ? "session closed" : reply["error"]
+      if reply.dig("value", "root_preserved")
+        puts "control released; the application window remains open"
+      else
+        puts reply["ok"] ? "session closed" : reply["error"]
+      end
       OK
     end
 
@@ -311,6 +693,8 @@ module Wrangle
     # --- output --------------------------------------------------------------------------------
 
     def report(value, options)
+      return desktop_report(value, options) if value["schema"] == "wrangle.observation.v1"
+
       puts "acted   #{value["kind"]} #{value["executed"].inspect}" if value["executed"]
       puts "page    #{value["title"].to_s[0, 70].inspect}  <#{value["url"]}>"
       puts format("state   %s  scroll %d/%d  %d chars  %d actions", value["fingerprint"],
@@ -318,6 +702,53 @@ module Wrangle
                   value["actions"].size)
       changes(value["changed"])
       actions(value["actions"], options)
+    end
+
+    def desktop_report(value, options)
+      puts "window  #{value.dig("scope", "app")}"
+      coverage = value["coverage"]
+      if value["complete"]
+        count = coverage["candidate_count"]
+        puts "ready   found #{count} possible #{count == 1 ? "action" : "actions"}"
+      else
+        puts "more    part of the window needs a closer look before Wrangle can act"
+      end
+      if value["changed"]
+        puts value.dig("changed", "same") ? "changed nothing" : "changed the available actions"
+        show_labels("  appeared", value.dig("changed", "appeared"))
+        show_labels("  gone", value.dig("changed", "disappeared"))
+      end
+      desktop_actions(value["candidates"], options)
+    end
+
+    def desktop_actions(list, options)
+      shown = options[:match] ? list.select { |item| item["label"] =~ /#{Regexp.escape(options[:match])}/i } : list
+      limit = options[:all] || options[:match] ? shown.size : 25
+      shown.first(limit).each do |item|
+        operations = item["operations"].map { |operation| desktop_operation(operation) }.join("/")
+        puts format("  %3d  %-20s %-14s %s", item["ref"], operations, item["role"], item["label"].to_s[0, 70])
+      end
+      puts "  ... #{shown.size - limit} more (--all, or --match RE to filter)" if shown.size > limit
+      OK
+    end
+
+    def desktop_operation(operation)
+      {
+        "DRILL" => "look closer", "PRESS" => "press", "SET_TEXT" => "type",
+        "CLEAR" => "clear", "TOGGLE" => "toggle", "EXPAND" => "expand", "COLLAPSE" => "collapse"
+      }.fetch(operation, operation.to_s.downcase.tr("_", " "))
+    end
+
+    def receipt_summary(receipt)
+      dispatch = receipt["dispatch"]
+      effect = receipt["effect"]
+      return "done     the action succeeded and Wrangle verified the result" if
+        dispatch == "delivered" && effect == "verified"
+      return "done     the app received the action; Wrangle could not verify the result" if dispatch == "delivered"
+      return "stopped  the window changed before Wrangle could act; nothing was sent" if dispatch == "not_delivered"
+      return "stopped  the app refused the action; nothing changed" if dispatch == "refused"
+
+      "uncertain the action may or may not have happened; do not repeat it"
     end
 
     def changes(changed)

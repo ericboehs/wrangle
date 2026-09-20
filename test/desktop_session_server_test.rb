@@ -750,6 +750,27 @@ class DesktopSessionServerTest < Minitest::Test
     assert_match(/consumed/, consumed["error"])
   end
 
+  def test_unrelated_revision_change_does_not_verify_a_press_effect
+    before = @driver.state("one", "Open")
+    unrelated = @driver.state("two", "Open")
+    unrelated["tree"] = {
+      "role" => "window", "name" => "Fixture", "children" => [
+        { "role" => "button", "name" => "Open", "states" => ["enabled"], "operations" => ["PRESS"] },
+        { "role" => "statictext", "name" => "Unrelated status changed" }
+      ]
+    }
+    @driver.observations = [before, before, unrelated]
+    server = server_seam
+    server.send(:dispatch, "op" => "observe")
+    proposal = server.send(:dispatch, "op" => "preview", "ref" => 1).fetch("value")
+
+    receipt = server.send(:dispatch, "op" => "execute",
+                                     "proposal_id" => proposal["proposal_id"]).fetch("value")
+
+    assert_equal "delivered", receipt["dispatch"]
+    assert_equal "unchanged", receipt["effect"]
+  end
+
   def test_partial_observation_requires_drill_and_dispatches_the_fresh_ref
     partial = @driver.state("top", "Group", operations: %w[DRILL PRESS], truncated: true)
     detail = @driver.state("detail", "Open", ref: "@old:e1")
@@ -872,7 +893,10 @@ class DesktopSessionServerTest < Minitest::Test
                                             operations: %w[SET_TEXT CLEAR])
     proposal = { "operation" => "SET_TEXT", "text" => "new", "candidate" => before["candidates"].first }
     assert_equal "unverified", Wrangle::DesktopEffect.verify(proposal, before, nil)
-    assert_equal "unchanged", Wrangle::DesktopEffect.verify({ "operation" => "PRESS" }, before, before)
+    assert_equal "unverified", Wrangle::DesktopEffect.verify({ "operation" => "PRESS" }, before, before)
+    pressed = @driver.state("press", "Open")
+    press = { "operation" => "PRESS", "candidate" => pressed["candidates"].first }
+    assert_equal "unchanged", Wrangle::DesktopEffect.verify(press, pressed, pressed)
 
     missing = @driver.state("new", "Other", role: "textfield", value: "new",
                                             operations: %w[SET_TEXT CLEAR])

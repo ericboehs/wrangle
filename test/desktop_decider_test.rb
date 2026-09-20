@@ -148,6 +148,20 @@ class DesktopDeciderTest < Minitest::Test
     assert_includes JSON.generate(groups["g2"]), "PRESS"
   end
 
+  def test_hierarchy_resolves_a_singleton_leaf_without_asking_an_invalid_question
+    candidates = 5.times.map { |index| candidate("Evidence #{index + 1}", "PRESS") }
+    transport = AdaptiveTransport.new(%w[evidence_1_group g3])
+    decider = Wrangle::DesktopDecider.new(
+      goal: "Report the final fact", literals: {}, provider: provider(transport, max_choices: 3)
+    )
+
+    evidence = decider.select_evidence(observation(*candidates), limit: 1)
+
+    assert_equal(["Evidence 5"], evidence.map { |item| item["label"] })
+    assert_equal 1, transport.requests.length
+    assert_equal %w[g1 g2 g3], transport.requests.first.dig("question", "criteria").keys
+  end
+
   def test_selects_bounded_visible_evidence_without_generating_a_summary
     transport = AdaptiveTransport.new(%w[evidence_1 e2], %w[evidence_2 ENOUGH])
     decider = Wrangle::DesktopDecider.new(

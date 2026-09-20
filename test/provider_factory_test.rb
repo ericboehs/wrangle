@@ -42,6 +42,18 @@ class ProviderFactoryTest < Minitest::Test
     ENV["JEV_API_KEY"] = previous
   end
 
+  def test_jev_provider_records_the_default_model_when_optional_configuration_is_absent
+    previous = ENV.fetch("JEV_API_KEY", nil)
+    ENV["JEV_API_KEY"] = "test-only"
+
+    [{}, { "provider_model" => nil }, { "provider_model" => "" }].each do |optional|
+      provider = Wrangle::ProviderFactory.build({ "provider" => "jev" }.merge(optional))
+      assert_equal Wrangle::Jev::DEFAULT_MODEL, provider.capabilities.model
+    end
+  ensure
+    ENV["JEV_API_KEY"] = previous
+  end
+
   def test_accepts_a_matching_explicit_qualification_receipt
     receipt = File.join(@directory, "qualification.json")
     model = Wrangle::ProviderFactory.build(

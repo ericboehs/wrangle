@@ -11,7 +11,7 @@ module Wrangle
   class ProviderFactory
     def self.build(options)
       name = options.fetch("provider")
-      model = name == "replay" ? replay_model(options) : options.fetch("provider_model", Jev::DEFAULT_MODEL)
+      model = name == "replay" ? replay_model(options) : jev_model(options)
       transport = case name
                   when "replay" then replay(options)
                   when "jev" then jev(options, model)
@@ -53,6 +53,12 @@ module Wrangle
       raise ConfigurationError, "Could not load replay provider trace: #{e.class}"
     end
     private_class_method :replay
+
+    def self.jev_model(options)
+      requested = options["provider_model"].to_s
+      requested.empty? ? Jev::DEFAULT_MODEL : requested
+    end
+    private_class_method :jev_model
 
     def self.jev(options, model)
       client = Jev.from_env(endpoint: options["provider_endpoint"], model:)

@@ -111,6 +111,8 @@ module Wrangle
     end
 
     def choose_hierarchically(options, state, name)
+      return deterministic_choice(options) if options.one?
+
       limit = @provider.capabilities.max_choices
       return @provider.choose(state:, name:, criteria: options, instructions: RULES) if options.length <= limit
 
@@ -130,6 +132,13 @@ module Wrangle
     def partition(options, limit)
       size = (options.length.to_f / limit).ceil
       options.to_a.each_slice(size).map(&:to_h)
+    end
+
+    def deterministic_choice(options)
+      choice = options.keys.fetch(0)
+      DecisionProvider::Decision.new(
+        choice:, confidence: 1.0, probabilities: { choice => 1.0 }, latency_ms: 0.0
+      )
     end
 
     def group_description(group)

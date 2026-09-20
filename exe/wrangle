@@ -254,7 +254,8 @@ module Wrangle
       end
 
       TASK_PROVIDER_ENV.each do |key, environment|
-        values[key] ||= ENV.fetch(environment, nil)
+        configured = ENV.fetch(environment, nil)
+        values[key] ||= configured unless configured.to_s.empty?
       end
       values
     end

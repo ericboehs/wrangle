@@ -3,6 +3,7 @@
 require "test_helper"
 
 class SafariTest < Minitest::Test
+  parallelize_me!
   include BridgeHelpers
 
   # --- scope ---------------------------------------------------------------------------------
@@ -221,7 +222,7 @@ class SafariTest < Minitest::Test
   end
 
   def test_a_silent_action_is_resolved_by_reading_its_nonce_never_by_repeating_it
-    session = dedicated(act: "finished_then_silent")
+    session = dedicated(act: "finished_then_silent", request_timeout: 0.05)
     page = session.observe
 
     assert_equal "a3", session.act(find(page, "Find stays"), page)["executed"]
@@ -230,14 +231,14 @@ class SafariTest < Minitest::Test
   end
 
   def test_an_action_that_only_started_is_reported_as_unknown
-    session = dedicated(act: "started_then_silent")
+    session = dedicated(act: "started_then_silent", request_timeout: 0.05)
     page = session.observe
     error = assert_raises(Wrangle::DeliveryUnknown) { session.act(find(page, "Find stays"), page) }
     assert_match(/without confirming/, error.message)
   end
 
   def test_an_action_the_page_never_recorded_is_reported_as_not_executed
-    session = dedicated(act: "forgotten_then_silent")
+    session = dedicated(act: "forgotten_then_silent", request_timeout: 0.05)
     page = session.observe
 
     error = assert_raises(Wrangle::Error) { session.act(find(page, "Find stays"), page) }
@@ -510,7 +511,7 @@ class SafariTest < Minitest::Test
   # The rule this protects: an action whose delivery is uncertain is never re-sent. Every one of
   # these ends the session instead, because a second click is the one mistake that cannot be undone.
   def test_an_action_whose_outcome_cannot_be_read_ends_the_session_rather_than_being_retried
-    session = dedicated(act: "silent_then_unreadable")
+    session = dedicated(act: "silent_then_unreadable", request_timeout: 0.05)
     page = session.observe
 
     error = assert_raises(Wrangle::DeliveryUnknown) { session.act(find(page, "Find stays"), page) }
@@ -523,7 +524,7 @@ class SafariTest < Minitest::Test
   # noticed as a dead process or as a probe that cannot be answered is a race between the exit and
   # the reaping, and is deliberately not asserted: both are correct and both end the same way.
   def test_a_bridge_that_dies_mid_action_is_never_asked_to_do_it_again
-    session = dedicated(act: "started_then_dead")
+    session = dedicated(act: "started_then_dead", reusable: false)
     page = session.observe
 
     assert_raises(Wrangle::DeliveryUnknown) { session.act(find(page, "Find stays"), page) }
@@ -534,7 +535,7 @@ class SafariTest < Minitest::Test
   # A session that may have mutated the page cannot describe what it would be closing, so it does
   # not close it. Leaving a window open is recoverable; closing the wrong one is not.
   def test_a_session_with_an_unknown_outcome_leaves_its_window_alone
-    session = dedicated(act: "started_then_silent")
+    session = dedicated(act: "started_then_silent", request_timeout: 0.05)
     page = session.observe
     assert_raises(Wrangle::DeliveryUnknown) { session.act(find(page, "Find stays"), page) }
 

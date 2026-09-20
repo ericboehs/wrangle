@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "errors"
+require_relative "timing"
 
 module Wrangle
   # Runs a goal, or a plan of goals, to a stopping point.
@@ -43,10 +44,11 @@ module Wrangle
     # leg that has done nothing is the premature-DONE case, and that one is worth pressing.
     CLAIM_LOOKS = { acted: 2, idle: 3 }.freeze
 
-    def initialize(session, request, expect)
+    def initialize(session, request, expect, timing: Timing)
       @session = session
       @request = request
       @expect = expect
+      @timing = timing
     end
 
     # One CLI call, several sub-goals. Each leg runs to its own DONE and the next begins, so the
@@ -293,6 +295,6 @@ module Wrangle
 
     def patience(outcome, soft) = [SOFT_SETTLE * (2**soft), outcome == :absent ? BLOCKED_CEILING : STEADY_CEILING].min
     def pct(value) = "#{(value.to_f * 100).round}%"
-    def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    def now = @timing.now
   end
 end

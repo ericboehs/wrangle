@@ -10,6 +10,7 @@ require "test_helper"
 #
 # The one rule with teeth is the last group: a mutation whose runtime vanished is never re-sent.
 class McpBridgeTest < Minitest::Test
+  parallelize_me!
   FAKE = File.expand_path("fixtures/fake_mcp.rb", __dir__)
 
   def setup
@@ -28,7 +29,7 @@ class McpBridgeTest < Minitest::Test
   def bridge(request_timeout: 5, startup_timeout: 10, **config)
     path = File.join(@tmpdir, "config-#{@bridges.length}.json")
     File.write(path, JSON.generate(config.merge(trace: @trace)))
-    made = Wrangle::McpBridge.new(command: [RbConfig.ruby, FAKE, path],
+    made = Wrangle::McpBridge.new(command: [RbConfig.ruby, "--disable-gems", FAKE, path],
                                   request_timeout: request_timeout, startup_timeout: startup_timeout)
     @bridges << made
     made

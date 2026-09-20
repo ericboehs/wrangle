@@ -7,6 +7,7 @@ require_relative "fixtures/fake_typesafe"
 # because everything worth checking here is a property of the transport: a 429 that must be retried,
 # a connection that opens and then says nothing, a body that is not the JSON object it claimed.
 class JevTest < Minitest::Test
+  parallelize_me!
   OK_BODY = JSON.generate("answers" => { "operation" => { "answer" => "CLICK" } }, "model" => "jev-test")
 
   def teardown
@@ -16,7 +17,8 @@ class JevTest < Minitest::Test
 
   def asking(script, **)
     @fake = FakeTypeSafe.new(script)
-    Wrangle::Jev.new(api_key: "test-key", endpoint: @fake.endpoint, **)
+    Wrangle::Jev.new(api_key: "test-key", endpoint: @fake.endpoint,
+                     timing: (@clock ||= AcceleratedClock.new), **)
   end
 
   def ask(jev) = jev.ask(state: { "url" => "https://fixture.test" }, questions: { "operation" => %w[CLICK DONE] })
@@ -134,9 +136,11 @@ class JevTest < Minitest::Test
 
     assert_equal "oversized", error.code
   end
+end
 
-  # --- configuration ----------------------------------------------------------------------------
-
+# Environment mutation is process-global, so configuration examples remain serial while transport
+# tests run in parallel against their own sockets.
+class JevEnvironmentTest < Minitest::Test
   def with_env(values)
     saved = values.keys.to_h { |key| [key, ENV.fetch(key, nil)] }
     values.each { |key, value| ENV[key] = value }

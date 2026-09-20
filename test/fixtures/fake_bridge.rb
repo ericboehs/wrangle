@@ -352,7 +352,21 @@ $stdin.each_line do |line|
 
   request = JSON.parse(line)
   op = request["op"]
-  File.open(config["trace"], "a") { |f| f.puts(JSON.generate(request)) } if config["trace"]
+  if op == "__configure"
+    config = request.fetch("config")
+    Page.extra = Array(config["extra_actions"])
+    bridge = FakeBridge.new(config)
+    puts JSON.generate({ "id" => request["id"], "ok" => true, "value" => { "configured" => true } })
+    next
+  end
+  if config["trace"]
+    begin
+      File.open(config["trace"], "a") { |f| f.puts(JSON.generate(request)) }
+    rescue Errno::ENOENT
+      # A timed-out request from the previous test may finish after its temp directory is removed.
+      # Its wrapper is already closed, so discard the stale trace rather than killing the shared process.
+    end
+  end
 
   # Whatever Safari would have complained about, and as much of it as the config asks for. It is the
   # only explanation a caller gets when the bridge then dies without answering, and a bridge that

@@ -6,6 +6,7 @@ require "socket"
 
 require_relative "run_loop"
 require_relative "safari"
+require_relative "timing"
 
 module Wrangle
   # A Safari session that outlives a single command.
@@ -37,11 +38,12 @@ module Wrangle
 
     # `session` is injectable so the protocol, the diffing, and the refusal shapes can be tested
     # against a fake bridge instead of a browser.
-    def initialize(socket_path, options, session: nil, jev: nil)
+    def initialize(socket_path, options, session: nil, jev: nil, timing: Timing)
       @socket_path = socket_path
       @options = options
       @session = session
       @jev = jev
+      @timing = timing
       @page = nil
       @acted = 0
       @history = []
@@ -103,7 +105,7 @@ module Wrangle
     def watch(thinking)
       seen = @page && @page["fingerprint"]
       while thinking.alive?
-        sleep(STEADY_POLL)
+        pause(STEADY_POLL)
         break unless thinking.alive?
 
         looked = @session.observe
@@ -156,7 +158,7 @@ module Wrangle
       deadline = now + budget
       loop do
         before = @page["fingerprint"]
-        sleep(STEADY_POLL)
+        pause(STEADY_POLL)
         @page = @session.observe
         return @page if @page["fingerprint"] == before || now >= deadline
       end
@@ -181,10 +183,10 @@ module Wrangle
       if @options["window_id"]
         raise ArgumentError, "The MCP backend cannot attach to an existing window" if mcp?
 
-        Safari.attach(window_id: @options["window_id"], display: @options["display"])
+        Safari.attach(window_id: @options["window_id"], display: @options["display"], timing: @timing)
       else
         Safari.open(@options.fetch("url"),
-                    display: @options["display"], bounds: @options["bounds"],
+                    display: @options["display"], bounds: @options["bounds"], timing: @timing,
                     **(mcp? ? { bridge: McpBridge.new } : {}))
       end
     end
@@ -290,7 +292,7 @@ module Wrangle
       stable = 0
       moved = departed?(baseline, page)
       until now >= deadline || (stable >= STABLE_ROUNDS && (moved || now >= floor))
-        sleep SETTLE_POLL
+        pause(SETTLE_POLL)
         nxt = @session.observe
         stable = nxt["fingerprint"] == page["fingerprint"] ? stable + 1 : 0
         moved ||= departed?(baseline, nxt)
@@ -382,7 +384,7 @@ module Wrangle
       expect = request["expect"] && Regexp.new(request["expect"], Regexp::IGNORECASE)
       plan = Array(request["plan"]).filter_map { |goal| presence(goal) }
       plan = [request["goal"]] if plan.empty?
-      summarise(request, RunLoop.new(self, request, expect).run(plan), expect)
+      summarise(request, RunLoop.new(self, request, expect, timing: @timing).run(plan), expect)
     end
 
     def summarise(request, steps, expect)
@@ -399,7 +401,8 @@ module Wrangle
 
     def presence(value) = value.nil? || value.to_s.empty? ? nil : value.to_s
 
-    def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    def now = @timing.now
+    def pause(seconds) = @timing.sleep(seconds)
 
     def shutdown
       begin
@@ -407,7 +410,10 @@ module Wrangle
       rescue Wrangle::Error
         nil # A poisoned session refuses to close its window. That refusal is the correct outcome.
       end
-      FileUtils.rm_f(@socket_path) if @socket_path
+      return unless @socket_path
+
+      FileUtils.rm_f(@socket_path)
+      FileUtils.rm_f("#{@socket_path}.pid")
     end
   end
 

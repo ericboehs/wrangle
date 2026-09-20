@@ -5,6 +5,7 @@ require "net/http"
 require "uri"
 
 require_relative "errors"
+require_relative "timing"
 
 module Wrangle
   # Asks Jev to pick one observed control.
@@ -29,11 +30,12 @@ module Wrangle
 
     attr_reader :model, :endpoint
 
-    def initialize(api_key:, endpoint: DEFAULT_ENDPOINT, model: DEFAULT_MODEL, timeout: 20)
+    def initialize(api_key:, endpoint: DEFAULT_ENDPOINT, model: DEFAULT_MODEL, timeout: 20, timing: Timing)
       @api_key = api_key
       @endpoint = URI.parse(endpoint)
       @model = model
       @timeout = timeout
+      @timing = timing
     end
 
     def ask(state:, questions:)
@@ -60,7 +62,7 @@ module Wrangle
         response = post(body)
         break unless RETRYABLE.include?(response.code.to_i) && attempt < 2
 
-        sleep(0.25 * (2**attempt))
+        @timing.sleep(0.25 * (2**attempt))
       end
       response
     end

@@ -207,6 +207,13 @@ credentials are always a handoff. If multiple AX targets expose the same visible
 states, and operation, Wrangle omits that operation from every match rather than resolving the tie
 with an opaque ref, path, or list position.
 
+In a source checkout, the stdlib-only
+[macOS acceptance harness](docs/evaluations/macos-app-compatibility.md) probes exact windows without
+retaining UI content. `script/macos_accept finder --runs 5` checks one profile;
+`script/macos_matrix --tier core --runs 5` checks a compatibility wave. App preparation and bounded
+provider tasks are separate opt-in flags, and the checked-in task profiles permit zero delivered
+actions.
+
 Pi discovers [`.pi/extensions/computer.ts`](.pi/extensions/computer.ts) in this checkout. Users can
 ask naturally:
 
@@ -516,6 +523,8 @@ property of the transport, not of a stub.
 ```
 COVERAGE=1 rake test                      # per-file lines and branches
 COVERAGE=1 COVERAGE_DETAIL=1 rake test    # and which ones are missing
+script/macos_accept --list                # macOS compatibility profiles, no app access
+script/macos_accept finder --runs 5       # read-only exact-window probes
 ```
 
 Coverage is measured with Ruby's own `Coverage` module rather than a gem: adding a dependency to

@@ -527,7 +527,9 @@ The first whole-Mac alpha does not ship unless the automated and live acceptance
 
 Safety and scope correctness are the hard release gate, but doing nothing is not a passing product.
 The controlled representative scenarios below MUST also complete successfully. Broader task-completion
-rate, latency, and context use remain measured objectives rather than release thresholds.
+rate, latency, and context use remain measured objectives rather than release thresholds. The
+executable application profiles and host/VM boundary are maintained in the
+[macOS compatibility matrix](evaluations/macos-app-compatibility.md).
 
 ### Representative acceptance scenarios
 

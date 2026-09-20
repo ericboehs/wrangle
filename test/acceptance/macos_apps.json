@@ -1,0 +1,316 @@
+{
+  "schema": "wrangle.macos-acceptance-matrix.v1",
+  "updated": "2026-09-19",
+  "profiles": [
+    {
+      "id": "finder",
+      "app": "Finder",
+      "family": "native",
+      "tier": "core",
+      "environment": "host_and_vm",
+      "status": "controlled_pass",
+      "preparation": {
+        "kind": "finder_fixture",
+        "settle_seconds": 1,
+        "ready_timeout_seconds": 10,
+        "ready_poll_seconds": 1
+      },
+      "expect": {
+        "complete": true,
+        "min_candidates": 1,
+        "min_evidence": 1,
+        "provenance": ["ax", "macos_helper_native"]
+      },
+      "task": {
+        "goal": "Confirm that the item named 'wrangle-acceptance-marker.txt' is visible in the Finder window. Do not open, move, rename, or delete anything.",
+        "steps": 1,
+        "min_confidence": 0.65,
+        "expected_statuses": ["done"],
+        "max_actions": 0
+      }
+    },
+    {
+      "id": "system-settings",
+      "app": "System Settings",
+      "family": "native",
+      "tier": "core",
+      "environment": "host_and_vm",
+      "status": "controlled_pass",
+      "preparation": {
+        "kind": "settings_accessibility",
+        "settle_seconds": 2,
+        "ready_timeout_seconds": 20,
+        "ready_poll_seconds": 1
+      },
+      "expect": {
+        "complete": true,
+        "min_candidates": 1,
+        "min_evidence": 1,
+        "provenance": ["ax", "macos_helper_native"]
+      },
+      "task": {
+        "goal": "Confirm that the Accessibility settings page is visibly open. Do not change any setting or permission.",
+        "steps": 1,
+        "min_confidence": 0.65,
+        "expected_statuses": ["done"],
+        "max_actions": 0
+      }
+    },
+    {
+      "id": "slack",
+      "app": "Slack",
+      "family": "electron",
+      "tier": "core",
+      "environment": "vm_structure_host_auth",
+      "status": "controlled_pass",
+      "preparation": {
+        "kind": "open_app",
+        "settle_seconds": 3,
+        "ready_timeout_seconds": 30,
+        "ready_poll_seconds": 1
+      },
+      "expect": {
+        "min_candidates": 1,
+        "min_evidence": 1,
+        "provenance": ["ax", "macos_helper_native"]
+      },
+      "task": {
+        "goal": "Confirm that a Slack window with visible workspace content is open. Do not navigate, type, or send anything.",
+        "steps": 1,
+        "min_confidence": 0.65,
+        "expected_statuses": ["done"],
+        "max_actions": 0
+      }
+    },
+    {
+      "id": "microsoft-teams",
+      "app": "Microsoft Teams",
+      "family": "electron",
+      "tier": "core",
+      "environment": "vm_structure_host_auth",
+      "status": "probe_pass",
+      "preparation": {
+        "kind": "open_app",
+        "settle_seconds": 3,
+        "ready_timeout_seconds": 60,
+        "ready_poll_seconds": 1
+      },
+      "expect": {
+        "min_candidates": 1,
+        "min_evidence": 1,
+        "provenance": ["ax", "macos_helper_native"]
+      },
+      "task": {
+        "goal": "Confirm that a Microsoft Teams window with visible application content is open. Do not navigate, type, call, or send anything.",
+        "steps": 1,
+        "min_confidence": 0.65,
+        "expected_statuses": ["done"],
+        "max_actions": 0
+      }
+    },
+    {
+      "id": "textedit",
+      "app": "TextEdit",
+      "family": "document",
+      "tier": "documents",
+      "environment": "host_and_vm",
+      "status": "pending",
+      "preparation": {
+        "kind": "textedit_fixture",
+        "settle_seconds": 2
+      },
+      "expect": {
+        "complete": true,
+        "min_candidates": 1,
+        "min_evidence": 1,
+        "provenance": ["ax", "macos_helper_native"]
+      },
+      "task": {
+        "goal": "Confirm that the exact text 'Wrangle document acceptance fixture.' is visible. Do not edit or save the document.",
+        "steps": 1,
+        "min_confidence": 0.65,
+        "expected_statuses": ["done"],
+        "max_actions": 0
+      }
+    },
+    {
+      "id": "preview",
+      "app": "Preview",
+      "family": "document",
+      "tier": "documents",
+      "environment": "host_and_vm",
+      "status": "pending",
+      "preparation": {
+        "kind": "manual",
+        "settle_seconds": 0
+      },
+      "expect": {
+        "min_candidates": 1,
+        "min_evidence": 1,
+        "provenance": ["ax", "macos_helper_native"]
+      },
+      "task": {
+        "goal": "Confirm that a document is visibly open in Preview. Do not print, share, annotate, or modify it.",
+        "steps": 1,
+        "min_confidence": 0.65,
+        "expected_statuses": ["done"],
+        "max_actions": 0
+      }
+    },
+    {
+      "id": "calculator",
+      "app": "Calculator",
+      "family": "native",
+      "tier": "utilities",
+      "environment": "host_and_vm",
+      "status": "pending",
+      "preparation": {
+        "kind": "open_app",
+        "settle_seconds": 1
+      },
+      "expect": {
+        "complete": true,
+        "min_candidates": 1,
+        "min_evidence": 1,
+        "provenance": ["ax", "macos_helper_native"]
+      },
+      "task": {
+        "goal": "Confirm that Calculator is visibly open. Do not press any calculator button.",
+        "steps": 1,
+        "min_confidence": 0.65,
+        "expected_statuses": ["done"],
+        "max_actions": 0
+      }
+    },
+    {
+      "id": "obsidian",
+      "app": "Obsidian",
+      "family": "electron",
+      "tier": "electron",
+      "environment": "host_and_vm",
+      "status": "pending",
+      "preparation": {
+        "kind": "open_app",
+        "settle_seconds": 3
+      },
+      "expect": {
+        "min_candidates": 1,
+        "min_evidence": 1,
+        "provenance": ["ax", "macos_helper_native"]
+      },
+      "task": {
+        "goal": "Confirm that an Obsidian window is visibly open. Do not navigate or edit any note.",
+        "steps": 1,
+        "min_confidence": 0.65,
+        "expected_statuses": ["done"],
+        "max_actions": 0
+      }
+    },
+    {
+      "id": "visual-studio-code",
+      "app": "Visual Studio Code",
+      "family": "electron",
+      "tier": "electron",
+      "environment": "host_and_vm",
+      "status": "pending",
+      "preparation": {
+        "kind": "open_app",
+        "settle_seconds": 3
+      },
+      "expect": {
+        "min_candidates": 1,
+        "min_evidence": 1,
+        "provenance": ["ax", "macos_helper_native"]
+      },
+      "task": {
+        "goal": "Confirm that a Visual Studio Code window is visibly open. Do not run a command, open a terminal, or edit a file.",
+        "steps": 1,
+        "min_confidence": 0.65,
+        "expected_statuses": ["done"],
+        "max_actions": 0
+      }
+    },
+    {
+      "id": "one-password",
+      "app": "1Password",
+      "family": "security",
+      "tier": "security",
+      "environment": "host_only",
+      "status": "boundary_only",
+      "preparation": {
+        "kind": "open_app",
+        "settle_seconds": 2
+      },
+      "expect": {
+        "min_candidates": 0,
+        "min_evidence": 0,
+        "provenance": ["ax", "macos_helper_native"]
+      }
+    },
+    {
+      "id": "bitwarden",
+      "app": "Bitwarden",
+      "family": "security",
+      "tier": "security",
+      "environment": "host_only",
+      "status": "boundary_only",
+      "preparation": {
+        "kind": "open_app",
+        "settle_seconds": 2
+      },
+      "expect": {
+        "min_candidates": 0,
+        "min_evidence": 0,
+        "provenance": ["ax", "macos_helper_native"]
+      }
+    },
+    {
+      "id": "safari-native-ax",
+      "app": "Safari",
+      "family": "browser",
+      "tier": "browsers",
+      "environment": "host_and_vm",
+      "status": "primary_driver_separate",
+      "preparation": {
+        "kind": "manual",
+        "settle_seconds": 0
+      },
+      "expect": {
+        "min_candidates": 1,
+        "min_evidence": 1,
+        "provenance": ["ax", "macos_helper_native"]
+      },
+      "task": {
+        "goal": "Confirm that a Safari window is visibly open. Do not navigate or submit anything.",
+        "steps": 1,
+        "min_confidence": 0.65,
+        "expected_statuses": ["done"],
+        "max_actions": 0
+      }
+    },
+    {
+      "id": "google-chrome",
+      "app": "Google Chrome",
+      "family": "browser",
+      "tier": "browsers",
+      "environment": "host_and_vm",
+      "status": "pending",
+      "preparation": {
+        "kind": "manual",
+        "settle_seconds": 0
+      },
+      "expect": {
+        "min_candidates": 1,
+        "min_evidence": 1,
+        "provenance": ["ax", "macos_helper_native"]
+      },
+      "task": {
+        "goal": "Confirm that a Google Chrome window is visibly open. Do not navigate, type, download, or submit anything.",
+        "steps": 1,
+        "min_confidence": 0.65,
+        "expected_statuses": ["done"],
+        "max_actions": 0
+      }
+    }
+  ]
+}

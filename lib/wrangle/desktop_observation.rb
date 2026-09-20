@@ -12,6 +12,7 @@ module Wrangle
     TEXT_ROLES = %w[textfield textarea searchfield combobox].freeze
     TOGGLE_ROLES = %w[checkbox switch radiobutton].freeze
     WINDOW_CONTROL = /\A(?:close|close window|close all|quit(?: .*)?|minimize|zoom|full ?screen)\z/i
+    VISIBLE_TEXT_CHARS = 500
 
     attr_reader :state
 
@@ -28,7 +29,65 @@ module Wrangle
         items
       end
 
+      # An action is addressable only by the semantic fields exposed to the provider. Opaque AX refs,
+      # paths, and target keys must never break a tie the provider cannot see.
+      def action_descriptor(candidate, operation)
+        {
+          "operation" => operation.to_s, "role" => candidate["role"].to_s,
+          "label" => bounded_visible(candidate["label"].to_s),
+          "value" => bounded_visible(scalar_value(candidate["value"])),
+          "states" => Array(candidate["states"]).map(&:to_s).uniq.sort
+        }.compact
+      end
+
+      def action_ambiguities(candidates)
+        entries = action_entries(candidates)
+        counts = entries.each_with_object(Hash.new(0)) { |entry, tally| tally[entry] += 1 }
+        seen = {}
+        entries.filter_map do |descriptor|
+          next unless counts[descriptor] > 1
+          next if seen[descriptor]
+
+          seen[descriptor] = true
+          descriptor.merge("matches" => counts[descriptor])
+        end
+      end
+
+      def action_unambiguous?(candidates, candidate, operation)
+        wanted = action_descriptor(candidate, operation)
+        Array(candidates).one? do |possible|
+          Array(possible["operations"]).map(&:to_s).uniq.include?(operation.to_s) &&
+            action_descriptor(possible, operation) == wanted
+        end
+      end
+
+      def reject_ambiguous_actions(candidates)
+        ambiguities = action_ambiguities(candidates)
+        ambiguous = ambiguities.to_h { |descriptor| [descriptor.except("matches"), true] }
+        filtered = Array(candidates).filter_map do |candidate|
+          operations = Array(candidate["operations"]).map(&:to_s).uniq.reject do |operation|
+            ambiguous[action_descriptor(candidate, operation)]
+          end
+          candidate.merge("operations" => operations) unless operations.empty?
+        end
+        [filtered, ambiguities]
+      end
+
       private
+
+      def action_entries(candidates)
+        Array(candidates).flat_map do |candidate|
+          Array(candidate["operations"]).map(&:to_s).uniq.map do |operation|
+            action_descriptor(candidate, operation)
+          end
+        end
+      end
+
+      def bounded_visible(value)
+        return value unless value.is_a?(String) && value.length > VISIBLE_TEXT_CHARS
+
+        "#{value[0, VISIBLE_TEXT_CHARS]}…"
+      end
 
       def collect_evidence(node, items, seen)
         visible = { "role" => node["role"].to_s.downcase, "label" => node["name"].to_s,
@@ -82,8 +141,9 @@ module Wrangle
     end
 
     def build
-      candidates = []
-      walk(@snapshot["tree"], candidates)
+      observed_candidates = []
+      walk(@snapshot["tree"], observed_candidates)
+      candidates, ambiguous_actions = self.class.reject_ambiguous_actions(observed_candidates)
       body = {
         "schema" => "wrangle.observation.v1", "driver" => "macos",
         "scope" => { "id" => @scope.id, "root" => @scope.root, "app" => @scope.app,
@@ -91,7 +151,8 @@ module Wrangle
         "window" => @window.slice("id", "bounds", "focused", "visible"),
         "snapshot_id" => @snapshot["snapshot_id"], "complete" => @snapshot.fetch("complete", true),
         "tree" => @snapshot["tree"], "candidates" => candidates,
-        "coverage" => coverage(candidates)
+        "ambiguous_actions" => ambiguous_actions,
+        "coverage" => coverage(candidates, ambiguous_actions)
       }
       body["revision"] = fingerprint(body)
       body
@@ -150,12 +211,14 @@ module Wrangle
       value if value.is_a?(String) || value.is_a?(Numeric) || value == true || value == false
     end
 
-    def coverage(candidates)
+    def coverage(candidates, ambiguous_actions)
       truncated = @snapshot["complete"] == false || truncated?(@snapshot["tree"])
       provenance = Array(@snapshot["provenance"])
       provenance = ["ax"] if provenance.empty?
       { "provenance" => provenance, "truncated" => truncated,
-        "candidate_count" => candidates.length, "ocr" => "not_used" }
+        "candidate_count" => candidates.length,
+        "ambiguous_action_count" => ambiguous_actions.sum { |action| action.fetch("matches") },
+        "ocr" => "not_used" }
     end
 
     def truncated?(node)

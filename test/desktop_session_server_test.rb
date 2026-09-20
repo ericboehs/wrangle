@@ -782,6 +782,28 @@ class DesktopSessionServerTest < Minitest::Test
     assert_nil @driver.drilled
   end
 
+  def test_preview_and_drill_refuse_indistinguishable_candidates
+    state = @driver.state("same", "Open")
+    duplicate = state["candidates"].first.merge("ref" => "@s:e2")
+    state["candidates"] << duplicate
+    state["coverage"]["candidate_count"] = 2
+    @driver.observations = [state]
+    server = server_seam
+    observed = server.send(:dispatch, "op" => "observe").fetch("value")
+
+    preview = server.send(:dispatch, "op" => "preview", "ref" => 1, "operation" => "PRESS")
+    assert_equal "ArgumentError", preview["class"]
+    assert_match(/multiple visible candidates/, preview["error"])
+    assert_equal 0, server.send(:dispatch, "op" => "status").dig("value", "pending_proposals")
+    assert_equal 2, observed["candidates"].length
+
+    state["candidates"].each { |candidate| candidate["operations"] = ["DRILL"] }
+    drilled = server.send(:dispatch, "op" => "drill", "ref" => 1)
+    assert_equal "ArgumentError", drilled["class"]
+    assert_match(/multiple visible candidates/, drilled["error"])
+    assert_nil @driver.drilled
+  end
+
   def test_revalidation_ambiguity_consumes_the_proposal_and_poison_scope
     before = @driver.state("one", "Open")
     ambiguous = @driver.state("one", "Open").merge("candidates" => [])
@@ -795,6 +817,22 @@ class DesktopSessionServerTest < Minitest::Test
     assert reply["terminal"]
     assert_nil @driver.executed
     assert server.send(:dispatch, "op" => "observe")["terminal"]
+  end
+
+  def test_revalidation_refuses_a_new_duplicate_even_when_the_revision_is_unchanged
+    before = @driver.state("one", "Open")
+    duplicate = before["candidates"].first.merge("ref" => "@fresh:e2")
+    ambiguous = before.merge("candidates" => [before["candidates"].first.merge("ref" => "@fresh:e1"), duplicate])
+    @driver.observations = [before, ambiguous]
+    server = server_seam
+    server.send(:dispatch, "op" => "observe")
+    proposal = server.send(:dispatch, "op" => "preview", "ref" => 1).fetch("value")
+
+    reply = server.send(:dispatch, "op" => "execute", "proposal_id" => proposal["proposal_id"])
+
+    assert_equal "ScopeLost", reply["class"]
+    assert reply["terminal"]
+    assert_nil @driver.executed
   end
 
   def test_not_delivered_or_refused_dispatch_is_not_counted_or_verified

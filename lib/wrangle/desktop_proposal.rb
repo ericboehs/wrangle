@@ -2,6 +2,7 @@
 
 require "securerandom"
 
+require_relative "desktop_observation"
 require_relative "errors"
 
 module Wrangle
@@ -16,6 +17,9 @@ module Wrangle
       operation = request["operation"] || infer_operation(candidate)
       unless candidate["operations"].include?(operation) && operation != "DRILL"
         raise ArgumentError, "#{operation.inspect} was not offered for action ##{index.inspect}"
+      end
+      unless DesktopObservation.action_unambiguous?(observation["candidates"], candidate, operation)
+        raise ArgumentError, "#{operation.inspect} for action ##{index.inspect} matches multiple visible candidates"
       end
 
       validate_text!(operation, request["text"])

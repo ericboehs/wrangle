@@ -87,6 +87,33 @@ class DesktopObservationTest < Minitest::Test
     assert_equal %w[ax macos_helper_native], state.dig("coverage", "provenance")
   end
 
+  def test_omits_indistinguishable_actions_without_using_opaque_target_identity
+    snapshot = snapshot_with(
+      { "role" => "window", "children" => [
+        { "ref_id" => "@s:e1", "role" => "button", "name" => "Open",
+          "states" => %w[enabled focused], "operations" => %w[PRESS EXPAND],
+          "target_key" => "native:0:button" },
+        { "ref_id" => "@s:e2", "role" => "button", "name" => "Open",
+          "states" => %w[focused enabled], "operations" => ["PRESS"], "target_key" => "native:1:button" },
+        { "ref_id" => "@s:e3", "role" => "button", "name" => "Open", "value" => "Secondary",
+          "states" => ["enabled"], "operations" => ["PRESS"], "target_key" => "native:2:button" }
+      ] }
+    )
+
+    state = Wrangle::DesktopObservation.new(scope: @scope, snapshot:, window: @window).state
+
+    values = state["candidates"].map { |candidate| candidate["value"] }
+    assert_equal [nil, "Secondary"], values
+    assert_equal ["EXPAND"], state.dig("candidates", 0, "operations")
+    assert_equal 2, state.dig("coverage", "candidate_count")
+    assert_equal 2, state.dig("coverage", "ambiguous_action_count")
+    ambiguity = state.fetch("ambiguous_actions").fetch(0)
+    assert_equal({ "operation" => "PRESS", "role" => "button", "label" => "Open",
+                   "states" => %w[enabled focused], "matches" => 2 }, ambiguity)
+    refute_includes ambiguity.keys, "target_key"
+    refute_includes ambiguity.keys, "ref"
+  end
+
   def test_revision_is_deterministic_and_changes_with_observed_state
     one = Wrangle::DesktopObservation.new(scope: @scope, snapshot: snapshot_with(tree), window: @window)
     two = Wrangle::DesktopObservation.new(scope: @scope, snapshot: snapshot_with(tree, id: "s2"), window: @window)

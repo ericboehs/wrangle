@@ -147,6 +147,7 @@ module Wrangle
       @log&.record(
         "observe", "scope_id" => @scope.id, "revision" => @observation["revision"],
                    "complete" => @observation["complete"], "candidates" => @observation["candidates"].length,
+                   "ambiguous_actions" => @observation.dig("coverage", "ambiguous_action_count"),
                    "changed" => !value["changed"].nil?, "elapsed_ms" => elapsed_ms(started)
       )
       value
@@ -157,6 +158,9 @@ module Wrangle
       previous = current
       target = candidate(request["ref"])
       raise ArgumentError, "DRILL was not offered for this action" unless target["operations"].include?("DRILL")
+      unless DesktopObservation.action_unambiguous?(@observation["candidates"], target, "DRILL")
+        raise ArgumentError, "DRILL target matches multiple visible candidates"
+      end
 
       started = monotonic
       view = { ref: target["ref"], snapshot_id: previous.fetch("snapshot_id") }
@@ -167,6 +171,7 @@ module Wrangle
       @log&.record(
         "drill", "scope_id" => @scope.id, "revision" => @observation["revision"],
                  "complete" => @observation["complete"], "candidates" => @observation["candidates"].length,
+                 "ambiguous_actions" => @observation.dig("coverage", "ambiguous_action_count"),
                  "elapsed_ms" => elapsed_ms(started)
       )
       value
@@ -240,7 +245,10 @@ module Wrangle
 
     def revalidated_candidate!(proposal, fresh)
       action_candidate = fresh["candidates"][proposal["number"] - 1]
-      return action_candidate if same_candidate?(proposal["candidate"], action_candidate)
+      if same_candidate?(proposal["candidate"], action_candidate) &&
+         DesktopObservation.action_unambiguous?(fresh["candidates"], action_candidate, proposal["operation"])
+        return action_candidate
+      end
 
       @proposals.delete(proposal["id"])
       @poisoned = ScopeLost.new("The proposed desktop target became ambiguous during revalidation")
@@ -309,6 +317,7 @@ module Wrangle
         "scope" => observation["scope"].slice("id", "root", "app"),
         "revision" => observation["revision"], "complete" => observation["complete"],
         "coverage" => observation["coverage"], "candidates" => candidates,
+        "ambiguous_actions" => observation["ambiguous_actions"],
         "changed" => changed(before, observation)
       }
     end

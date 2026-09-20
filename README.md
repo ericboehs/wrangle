@@ -203,7 +203,9 @@ wrangle task --app Finder --goal "Open the fixture" --provider replay \
 A task invocation authorizes only its necessary reversible actions. Internally each action still uses
 a revision-bound one-shot proposal. Consequential actions stop before delivery, and uncertain delivery
 terminates the task without retry. Text must be an exact quoted goal span or named literal;
-credentials are always a handoff.
+credentials are always a handoff. If multiple AX targets expose the same visible role, label, value,
+states, and operation, Wrangle omits that operation from every match rather than resolving the tie
+with an opaque ref, path, or list position.
 
 Pi discovers [`.pi/extensions/computer.ts`](.pi/extensions/computer.ts) in this checkout. Users can
 ask naturally:

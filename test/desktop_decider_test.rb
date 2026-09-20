@@ -65,6 +65,44 @@ class DesktopDeciderTest < Minitest::Test
     assert_equal "PRESS", transport.requests.first.dig("question", "criteria", "a1", "operation")
   end
 
+  def test_omits_ambiguous_actions_and_discloses_them_to_the_provider
+    transport = AdaptiveTransport.new(%w[action HANDOFF])
+    decider = Wrangle::DesktopDecider.new(
+      goal: "Open the report", literals: {}, provider: provider(transport)
+    )
+
+    choice = decider.decide(observation(candidate("Open", "PRESS"), candidate("Open", "PRESS")))
+
+    assert_equal "HANDOFF", choice.operation
+    criteria = transport.requests.first.dig("question", "criteria")
+    assert_equal %w[DONE BLOCKED HANDOFF], criteria.keys
+    ambiguities = transport.requests.first.dig("state", "ambiguous_actions")
+    assert_equal 1, ambiguities["total"]
+    assert_equal 2, ambiguities.dig("items", 0, "matches")
+    assert_equal "Open", ambiguities.dig("items", 0, "label")
+  end
+
+  def test_ambiguity_is_operation_aware_and_uses_the_bounded_visible_description
+    long_prefix = "x" * Wrangle::DesktopObservation::VISIBLE_TEXT_CHARS
+    candidates = [
+      candidate("Open", "PRESS", "CLEAR", value: "#{long_prefix}a"),
+      candidate("Open", "PRESS", value: "#{long_prefix}b"),
+      candidate("Open", "DRILL")
+    ]
+    transport = AdaptiveTransport.new(%w[action a2])
+    choice = Wrangle::DesktopDecider.new(
+      goal: "Inspect the unique branch", literals: {}, provider: provider(transport)
+    ).decide(observation(*candidates))
+
+    assert_equal "DRILL", choice.operation
+    assert_equal 3, choice.number
+    offered = transport.requests.first.dig("question", "criteria").values
+    operations = offered.filter_map do |description|
+      description["operation"] if description.is_a?(Hash)
+    end
+    assert_equal %w[CLEAR DRILL], operations
+  end
+
   def test_text_must_be_an_explicit_literal_or_exact_quoted_goal_span
     one = AdaptiveTransport.new(%w[action a1])
     decider = Wrangle::DesktopDecider.new(

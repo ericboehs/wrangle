@@ -104,6 +104,10 @@ module Wrangle
       return task_result(choice.operation.downcase, **state.slice(:remaining, :actions), assessment:) if
         choice.terminal?
 
+      # The first choice may have seen only a skeleton. Re-decide from the completed observation
+      # rather than carrying a target selection across a perception boundary.
+      return nil if escalate_partial_task_observation?
+
       candidate = @observation.fetch("candidates").fetch(choice.number - 1)
       proposal = preview("ref" => choice.number, "operation" => choice.operation, "text" => choice.text)
       qualify_task_proposal(proposal, choice)
@@ -112,6 +116,18 @@ module Wrangle
       return halted if halted
 
       task_receipt_result(proposal, pending, choice, assessment, state)
+    end
+
+    def escalate_partial_task_observation?
+      return false unless @observation.dig("coverage", "truncated")
+      unless escalate_observation?
+        raise PartialObservation, "Selected action remains inside an unresolved progressive view"
+      end
+      if @observation.dig("coverage", "truncated")
+        raise PartialObservation, "Full desktop observation still has unresolved branches"
+      end
+
+      true
     end
 
     def task_preflight_result(proposal, pending, assessment, state)

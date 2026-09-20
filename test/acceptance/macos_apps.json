@@ -88,7 +88,7 @@
       "family": "electron",
       "tier": "core",
       "environment": "vm_structure_host_auth",
-      "status": "probe_pass",
+      "status": "navigation_pass",
       "preparation": {
         "kind": "open_app",
         "settle_seconds": 3,

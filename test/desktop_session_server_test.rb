@@ -70,12 +70,13 @@ class DesktopSessionServerTest < Minitest::Test
 
   class FakeDriver
     attr_accessor :failure, :execute_failure, :observations, :dispatch_result, :found_windows
-    attr_reader :closed, :attached, :executed, :drilled, :window_request
+    attr_reader :closed, :attached, :executed, :drilled, :window_request, :observed_skeletons
 
     def initialize
       @observations = [state("one", "Open")]
       @dispatch_result = { "dispatch" => "delivered" }
       @found_windows = [{ "id" => "w-1", "app_name" => "Finder", "focused" => true }]
+      @observed_skeletons = []
     end
 
     def windows(app:, titles:)
@@ -88,7 +89,8 @@ class DesktopSessionServerTest < Minitest::Test
       DesktopSessionServerTest.scope
     end
 
-    def observe(_scope)
+    def observe(_scope, skeleton: true)
+      @observed_skeletons << skeleton
       raise failure if failure
 
       value = observations.length > 1 ? observations.shift : observations.first
@@ -238,6 +240,88 @@ class DesktopSessionServerTest < Minitest::Test
     assert @log.events.find { |event| event["event"] == "execute" }["durable"]
     refute_includes JSON.generate(result), "proposal_id"
     refute_includes JSON.generate(result), "@s:e1"
+  end
+
+  def test_single_task_escalates_a_partial_skeleton_and_redecides_before_action
+    partial = @driver.state("partial", "Join a meeting", truncated: true)
+    complete = @driver.state("complete", "Join a meeting")
+    fresh = @driver.state("complete", "Join a meeting", ref: "@fresh:e1")
+    after = @driver.state("after", "Meeting code", role: "textfield", operations: %w[SET_TEXT CLEAR])
+    @driver.observations = [partial, complete, fresh, after]
+    provider = FakeProvider.new(["a1", 0.9], ["a1", 0.92], ["DONE", 0.95])
+    server = server_seam(provider:)
+
+    result = server.send(
+      :autonomous_task,
+      "goal" => "Open the Join a meeting form without joining a meeting", "steps" => 2
+    )
+
+    assert_equal "done", result["status"]
+    assert_equal 1, result["actions_taken"]
+    assert_equal "verified", result.dig("actions", 0, "effect")
+    assert_equal [true, false, false, false], @driver.observed_skeletons
+    assert_equal "@fresh:e1", @driver.executed[:ref]
+    escalation = @log.events.find { |event| event["event"] == "observe_escalated" }
+    assert escalation
+    assert escalation["complete"]
+    refute escalation.key?("label")
+  end
+
+  def test_single_task_can_escalate_without_optional_logging
+    partial = @driver.state("partial", "Open", truncated: true)
+    complete = @driver.state("complete", "Open")
+    @driver.observations = [partial, complete]
+    provider = FakeProvider.new(["a1", 0.9], ["HANDOFF", 0.9])
+    server = server_seam(provider:, log: nil)
+
+    result = server.send(:autonomous_task, "goal" => "Open the fixture", "steps" => 1)
+
+    assert_equal "handoff", result["status"]
+    assert_equal [true, false], @driver.observed_skeletons
+    assert_nil @driver.executed
+  end
+
+  def test_single_task_refuses_when_escalated_observation_is_still_partial
+    partial = @driver.state("partial", "Open", truncated: true)
+    still_partial = @driver.state("full", "Open", truncated: true)
+    @driver.observations = [partial, still_partial]
+    server = server_seam(provider: FakeProvider.new(["a1", 0.9]))
+
+    error = assert_raises(Wrangle::PartialObservation) do
+      server.send(:autonomous_task, "goal" => "Open the fixture", "steps" => 1)
+    end
+
+    assert_match(/Full desktop observation/, error.message)
+    assert_equal [true, false], @driver.observed_skeletons
+    assert_nil @driver.executed
+  end
+
+  def test_single_task_refuses_to_replace_a_partial_drilled_view_with_the_root
+    top = @driver.state("top", "Group", operations: ["DRILL"], truncated: true)
+    detail = @driver.state("detail", "Open", truncated: true)
+    @driver.observations = [top, detail]
+    provider = FakeProvider.new(["a1", 0.9], ["a1", 0.9])
+    server = server_seam(provider:)
+
+    error = assert_raises(Wrangle::PartialObservation) do
+      server.send(:autonomous_task, "goal" => "Open the nested item", "steps" => 1)
+    end
+
+    assert_match(/progressive view/, error.message)
+    assert @driver.drilled
+    assert_nil @driver.executed
+  end
+
+  def test_single_task_does_not_escalate_partial_observation_for_terminal_decision
+    partial = @driver.state("partial", "Visible content", truncated: true)
+    @driver.observations = [partial]
+    server = server_seam(provider: FakeProvider.new(["DONE", 0.95]))
+
+    result = server.send(:autonomous_task, "goal" => "Confirm content is visible", "steps" => 1)
+
+    assert_equal "done", result["status"]
+    assert_equal [true], @driver.observed_skeletons
+    refute(@log.events.any? { |event| event["event"] == "observe_escalated" })
   end
 
   def test_single_task_uses_typed_provider_selection_for_large_evidence

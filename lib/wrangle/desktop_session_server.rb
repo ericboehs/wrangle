@@ -8,6 +8,7 @@ require_relative "desktop_dispatch"
 require_relative "desktop_effect"
 require_relative "desktop_session_autonomy"
 require_relative "desktop_policy"
+require_relative "desktop_progressive_observation"
 require_relative "desktop_proposal"
 require_relative "event_log"
 require_relative "macos_driver"
@@ -19,6 +20,7 @@ module Wrangle
   # Holds one exact macOS root window across short-lived CLI invocations.
   class DesktopSessionServer
     include DesktopDispatch
+    include DesktopProgressiveObservation
     include DesktopSessionAutonomy
 
     PROPOSAL_TTL = DesktopProposal::TTL
@@ -38,6 +40,7 @@ module Wrangle
       @autonomy = DesktopAutonomy.new(provider) if provider
       @observation = nil
       @view = nil
+      @full_observation = false
       @proposals = {}
       @runs = {}
       @actions = 0
@@ -143,6 +146,7 @@ module Wrangle
       before = @observation
       @observation = @driver.observe(@scope)
       @view = nil
+      @full_observation = false
       value = compact(@observation, before)
       @log&.record(
         "observe", "scope_id" => @scope.id, "revision" => @observation["revision"],
@@ -166,6 +170,7 @@ module Wrangle
       view = { ref: target["ref"], snapshot_id: previous.fetch("snapshot_id") }
       @observation = @driver.drill(@scope, **view)
       @view = view
+      @full_observation = false
       @proposals.clear
       value = compact(@observation, previous)
       @log&.record(
@@ -270,10 +275,6 @@ module Wrangle
                    "classification" => proposal.dig("policy", "classification"),
                    "consequential" => proposal.dig("policy", "consequential")
       )
-    end
-
-    def fresh_observation
-      @view ? @driver.drill(@scope, **@view) : @driver.observe(@scope)
     end
 
     def observe_after_dispatch

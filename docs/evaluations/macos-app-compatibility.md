@@ -12,6 +12,8 @@ ids, process ids, titles, AX labels, AX values, task evidence, or screenshots.
   gate is not yet established.
 - `probe_pass`: repeated exact-window structural probes pass, but task/action support remains
   unclaimed.
+- `navigation_pass`: a bounded reversible navigation and cleanup passed strict effect verification,
+  but broader authenticated workflows remain unclaimed.
 - `pending`: no supported-app claim yet.
 - `boundary_only`: Wrangle should verify exact-window containment and fail closed around sensitive
   content; it must not enter or extract credentials.
@@ -28,7 +30,7 @@ selected profile satisfies its current machine-readable expectations.
 | Finder | Native | Core | Host + VM | Complete fixture observation and one controlled reversible action passed | 20 clean fixture runs after strict effect verification |
 | System Settings | Native | Core | Host + VM | Complete observation and reversible navigation passed without changing a setting | 20 clean fixture runs plus permission-denial cases |
 | Slack | Electron | Core | VM structure; host authentication | Progressive composer observation, verified unsent draft, and verified clear passed | Five direct task runs, then five Pi runs; Send must remain undispatched |
-| Microsoft Teams | Electron | Core | VM structure; host authentication | 5/5 exact-window structural probes passed with explicit partial coverage | Direct task and controlled-action acceptance |
+| Microsoft Teams | Electron | Core | VM structure; host authentication | 5/5 structural probes and 5/5 reversible open/Back workflows passed with strict effects | Authenticated workspace, composer, restart, and Send-policy acceptance |
 | TextEdit | Document | Documents | Host + VM | Pending | Read-only fixture followed by verified-then-cleared exact text |
 | Preview | Document | Documents | Host + VM | Pending | Read-only local PDF fixture; no print, share, or annotation |
 | Calculator | Native | Utilities | Host + VM | Pending | Read-only structure followed by reversible local input |
@@ -99,4 +101,5 @@ protected Wrangle event-log boundary.
 A supported-app claim requires zero scope, policy, effect, and cleanup failures, followed by at least
 95% completion over 20 stable fixture trials. Direct harness trials precede five Pi `computer` trials
 so outer-model latency cannot hide driver compatibility failures. The first recorded core probe is
-[documented here](macos-core-probe-2026-09-19.md).
+[documented here](macos-core-probe-2026-09-19.md); the controlled Teams navigation and five Pi trials
+are [documented separately](macos-teams-controlled-acceptance-2026-09-20.md).

@@ -250,8 +250,10 @@ not an interface integrations must parse.
    same stub is not success.
 5. It MUST reapply the attribute after a process restart and MAY reapply it when a previously useful
    tree collapses to a stub.
-6. It MUST NOT set `AXEnhancedUserInterface`; that attribute can cause AppKit window-resize bugs and
-   Electron does not support it on the application root.
+6. It MUST prefer `AXManualAccessibility`. `AXEnhancedUserInterface` MAY be evaluated only as a
+   confirmed Chromium-family fallback because it has known window positioning, resizing, animation,
+   and window-manager side effects. Such a fallback MUST capture and restore the prior value on every
+   exit path, MUST NOT coexist with window geometry actions, and MUST pass live regression coverage.
 7. Electron tree enablement MUST be idempotent and represented in the compact event log.
 8. The acceptance suite MUST demonstrate useful Slack and Teams trees after enablement. A fixed node
    count is not required, because application releases change their trees.
@@ -486,13 +488,16 @@ available, but exact APIs are deferred until that milestone.
 
 ### 10. CLI and Pi integration
 
-1. The CLI is the durable user-facing engine interface.
+1. The CLI is the durable user-facing engine interface. Its primary computer-use command accepts one
+   natural goal and application name and owns the bounded loop and cleanup.
 2. The Pi extension is a thin integration, not a second implementation of scope, policy, or the run
-   loop.
-3. Preview is the default. Executing mutations must be an explicit tool or flag distinction visible to
-   policy.
-4. The CLI MUST support listing drivers/providers and their capabilities, selecting scopes, observing,
-   planning, running, stopping, closing, and inspecting stored evidence.
+   loop. A normal desktop request MUST require only one Pi tool call.
+3. The natural task tool is an explicit execution boundary for necessary non-consequential actions.
+   Low-level debug interfaces remain preview-first, and consequential dispatch requires a separate,
+   artifact-bound approval.
+4. The CLI MUST support the single-task interface plus listing drivers/providers and their
+   capabilities, selecting scopes, observing, planning, running, stopping, closing, and inspecting
+   stored evidence.
 5. Agent instructions MUST direct agents to use the CLI/tool interface rather than writing scripts
    against internal classes.
 6. Human output may be richer than agent output but MUST preserve the same meanings and terminal
@@ -766,7 +771,9 @@ from the product boundary.
 Relevant prior art includes:
 
 - Electron's documented `AXManualAccessibility` opt-in and Chromium's on-demand accessibility tree;
-- `agent-desktop` live findings for Slack tree enablement and Electron `contenteditable` behavior;
+- the native Finder, Settings, and Slack acceptance findings for tree enablement and Electron
+  `contenteditable` behavior;
+- `jev-use` for keeping the AX read/typed-choice/act/check loop behind one natural task interface;
 - `typesafe-computer-use` for merged AX/OCR provenance, bounded tree walking, changed-region OCR, and
   focused-field state;
 - `mobile-jev` for fresh-target validation, record-before-observe, exact-span typing, and refusing to

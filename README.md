@@ -15,6 +15,12 @@ with a banner across the top, none of your cookies, and none of your sessions. T
 for testing a site. It is the wrong tool for doing something *in* a browser you are already logged
 into. Wrangle is for the second case.
 
+> **Release status:** 0.1 is the stable Safari engine described below. The unreleased macOS alpha on
+> `feature/macos-pi-alpha` adds scoped AX computer use, provider qualification, and a project-local Pi
+> tool. Its controlled Finder/Settings/Slack gate passes on the alpha host through the exact-window
+> native driver; see
+> [`docs/evaluations/macos-alpha-acceptance-2026-09-19.md`](docs/evaluations/macos-alpha-acceptance-2026-09-19.md).
+
 ```ruby
 require "wrangle"
 
@@ -162,6 +168,55 @@ the only optimisation that matters is sending fewer of them. A read costs two ev
 one evaluation) and a mutation costs four. The page scripts are shipped once at startup instead of
 ~12 KB per call, unresolved specifiers are addressed rather than resolved, and nothing reads window
 bounds on the hot path.
+
+## Scoped macOS alpha
+
+The alpha keeps the same observe → propose → execute boundary for one exact application window. A
+shipped Swift helper owns window/process/display discovery, Electron accessibility setup, bounded AX
+observation, and native dispatch. There is no `agent-desktop` runtime prerequisite. Native refs remain
+bound to one snapshot and scope, actions revalidate the exact process/window/AX target, and delivery
+is still verified independently afterward. A locked login session is reported as unavailable rather
+than treated as an empty or broken AX tree.
+
+The primary interface is one natural task. Wrangle selects the only or uniquely focused app window,
+runs at most eight typed decision/action cycles internally, verifies every delivered action, releases
+its lease automatically, and leaves the application window open:
+
+```bash
+wrangle doctor
+wrangle task --app Finder --goal "Open Search in the disposable Finder window" --provider jev
+```
+
+`windows`, `attach`, `observe`, `drill`, `preview`, `execute`, and `close` remain debug and conformance
+interfaces; an outer agent does not orchestrate them during a normal task.
+
+A provider is explicit and is not mutation-qualified merely because its API is compatible. Qualification
+receipts are bound to the canonical suite, provider/model (and exact replay-trace digest), and expire after
+seven days:
+
+```bash
+wrangle qualify --provider replay --provider-trace trace.jsonl --output qualification.json
+wrangle task --app Finder --goal "Open the fixture" --provider replay \
+  --provider-trace trace.jsonl --provider-qualification qualification.json
+```
+
+A task invocation authorizes only its necessary reversible actions. Internally each action still uses
+a revision-bound one-shot proposal. Consequential actions stop before delivery, and uncertain delivery
+terminates the task without retry. Text must be an exact quoted goal span or named literal;
+credentials are always a handoff.
+
+Pi discovers [`.pi/extensions/computer.ts`](.pi/extensions/computer.ts) in this checkout. Users can
+ask naturally:
+
+> Check the #notifications channel in Boehs Slack.
+
+The agent calls `computer` once with only the natural goal and application name. Wrangle performs
+window selection, progressive observation, typed decisions, proposals, dispatch, verification, and
+cleanup internally; users and the outer agent never handle window IDs, refs, proposal IDs, revisions,
+or receipt vocabulary. Consequential actions stop before delivery; this first protocol reports the
+pending action but cannot yet resume its bound approval. Every result releases Wrangle's exclusive
+lease and deliberately leaves the user-owned app window open. Policy remains in Wrangle rather than
+the extension.
 
 ## CLI
 

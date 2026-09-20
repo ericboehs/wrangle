@@ -1,17 +1,50 @@
 ---
 name: wrangle
-description: Drive a real Safari window from the shell - open a page, see what it offers, click, type, and read results back. Use for looking things up on sites that need a real logged-in browser (flights, prices, dashboards, portals), filling a web form, or when the user says "use my browser", "check this site", or "/wrangle". Not for fetching static pages; use a normal HTTP fetch for those.
-compatibility: macOS with Safari, and `wrangle` on PATH. Requires Safari > Settings > Advanced > "Allow JavaScript from Apple Events", plus a one-time Apple Events permission prompt.
+description: Use a real, scoped macOS app or Safari window for requests such as "Check the #notifications channel in Boehs Slack", "use my browser", or "/wrangle". Prefer the computer tool when available; otherwise use the Safari CLI. Not for static public pages that normal HTTP can fetch.
+compatibility: macOS with Wrangle on PATH. Desktop use requires the repository Pi computer extension, an explicitly configured decision provider, and Accessibility permission. Safari additionally requires JavaScript from Apple Events and its one-time permission prompt.
 ---
 
 # Wrangle
 
-Drive one real Safari window through a persistent session. Every command below is a shell command.
+Wrangle lets an agent work inside one real window without taking over the rest of the computer.
+
+## Natural desktop requests in Pi
+
+When the `computer` tool is available, call it **once** with the complete natural goal and application
+name. **Do not make the user learn Wrangle commands, window IDs, refs, proposal IDs, revisions,
+receipts, AX terminology, or provider configuration.** Wrangle owns window selection and the bounded
+read → typed decision → policy → action → verification loop.
+
+For example, when the user says:
+
+> Check the #notifications channel in Boehs Slack.
+
+call `computer` once with that goal and `app: "Slack"`, then summarize the returned visible evidence.
+Do not manually list, attach, observe, drill, find, preview, execute, or finish.
+
+- A plain imperative authorizes necessary reversible navigation, not Send, Delete, purchases, or
+  settings changes. Consequential actions stop before delivery. This alpha cannot resume the bound
+  proposal, so explain the limitation and do not call `computer` again in a loop.
+- Pass a literal only when it is exact non-secret text from the user's request. Never invent text.
+- Never use shell commands during or after a computer task—not for debugging, checking the date, or
+  bypassing a refusal. Never substitute a raw accessibility helper or another computer-use tool.
+- Wrangle stops at eight actions and three progressive drills. Failed or uncertain delivery is never
+  retried automatically.
+- Say what happened in the app: “I checked #notifications…” rather than describing decisions,
+  candidates, drivers, or receipts.
+- Wrangle releases control automatically on success or failure and **leaves the user's app window
+  open by design**. There is no separate finish call.
+- If delivery is uncertain, say plainly that the action may or may not have happened and do not retry.
+
+## Safari CLI
+
+Use the CLI when the `computer` tool is unavailable or the task specifically targets Safari. Every
+command below is a shell command.
 
 **Never write a Ruby script for this.** The CLI is the entire interface. If you catch yourself
 writing `require "wrangle"`, stop — use `wrangle observe` and `wrangle act` instead.
 
-## The loop
+### The loop
 
 ```bash
 wrangle open "https://example.com" --display 1 --settle 8   # start; prints the first observation

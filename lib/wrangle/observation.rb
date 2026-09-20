@@ -44,7 +44,7 @@ module Wrangle
     end
 
     def stringify(action)
-      action.to_h { |key, value| [key.to_s, value] }
+      action.transform_keys(&:to_s)
     end
   end
 end

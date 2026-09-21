@@ -184,15 +184,16 @@ its lease automatically, and leaves the application window open:
 
 ```bash
 wrangle doctor
-wrangle task --app Finder --goal "Open Search in the disposable Finder window" --provider jev
+wrangle task --app Finder --goal "Open Search in the disposable Finder window"
 ```
 
 `windows`, `attach`, `observe`, `drill`, `preview`, `execute`, and `close` remain debug and conformance
 interfaces; an outer agent does not orchestrate them during a normal task.
 
-A provider is explicit and is not mutation-qualified merely because its API is compatible. Qualification
-receipts are bound to the canonical suite, provider/model (and exact replay-trace digest), and expire after
-seven days:
+Desktop tasks use Jev when neither `--provider` nor `WRANGLE_DESKTOP_PROVIDER` is set. An explicitly
+configured provider overrides that default, and Wrangle never falls back between providers. No provider is
+mutation-qualified merely because its API is compatible. Qualification receipts are bound to the canonical
+suite, provider/model (and exact replay-trace digest), and expire after seven days:
 
 ```bash
 wrangle qualify --provider replay --provider-trace trace.jsonl --output qualification.json

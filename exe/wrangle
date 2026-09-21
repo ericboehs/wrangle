@@ -27,7 +27,7 @@ module Wrangle
         wrangle displays [--driver macos] list displays in top-left window coordinates
         wrangle doctor                    check macOS driver capabilities and permissions
         wrangle task --app APP --goal GOAL
-                                          complete one bounded native desktop task
+                                          complete one bounded native desktop task (Jev by default)
         wrangle qualify --provider NAME   run the provider conformance suite and emit a receipt
                          [--suite PATH] [--output PATH]
 
@@ -218,6 +218,8 @@ module Wrangle
       driver&.close
     end
 
+    DEFAULT_TASK_PROVIDER = "jev"
+
     TASK_PROVIDER_ENV = {
       "provider_model" => "WRANGLE_DESKTOP_PROVIDER_MODEL",
       "provider_endpoint" => "WRANGLE_DESKTOP_PROVIDER_ENDPOINT",
@@ -248,10 +250,8 @@ module Wrangle
 
     def task_provider_options(options)
       values = PROVIDER_OPTIONS.to_h { |key| [key.to_s, options[key]] }.compact
-      values["provider"] ||= ENV.fetch("WRANGLE_DESKTOP_PROVIDER", nil)
-      if values["provider"].to_s.empty?
-        raise ConfigurationError, "Set --provider or WRANGLE_DESKTOP_PROVIDER explicitly for desktop tasks"
-      end
+      values["provider"] ||= ENV.fetch("WRANGLE_DESKTOP_PROVIDER", DEFAULT_TASK_PROVIDER)
+      raise ConfigurationError, "WRANGLE_DESKTOP_PROVIDER cannot be empty" if values["provider"].to_s.empty?
 
       TASK_PROVIDER_ENV.each do |key, environment|
         configured = ENV.fetch(environment, nil)

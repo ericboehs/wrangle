@@ -104,7 +104,7 @@ class CliTest < Minitest::Test
     assert_match(/needs --app APP and --goal GOAL/, out)
   end
 
-  def test_single_desktop_task_never_uses_an_implicit_provider_key
+  def test_single_desktop_task_defaults_to_jev_when_no_provider_is_configured
     with_fake_commands do |env|
       out, status = run_cli("task", "--app", "Finder", "--goal", "Inspect it", "--json", env:)
       reply = JSON.parse(out)
@@ -112,7 +112,20 @@ class CliTest < Minitest::Test
       assert_equal 3, status
       refute reply["ok"]
       assert_equal "ConfigurationError", reply["class"]
-      assert_match(/Set --provider or WRANGLE_DESKTOP_PROVIDER explicitly/, reply["error"])
+      assert_match(/Set JEV_API_KEY/, reply["error"])
+    end
+  end
+
+  def test_single_desktop_task_rejects_an_explicitly_empty_provider
+    with_fake_commands do |env|
+      env = env.merge("WRANGLE_DESKTOP_PROVIDER" => "")
+      out, status = run_cli("task", "--app", "Finder", "--goal", "Inspect it", "--json", env:)
+      reply = JSON.parse(out)
+
+      assert_equal 3, status
+      refute reply["ok"]
+      assert_equal "ConfigurationError", reply["class"]
+      assert_match(/WRANGLE_DESKTOP_PROVIDER cannot be empty/, reply["error"])
     end
   end
 

@@ -342,8 +342,9 @@ not an interface integrations must parse.
 7. Provider responses MUST be validated for schema, offered-option coverage, normalized probability
    mass, and choice/distribution consistency before policy may use them.
 8. A provider MUST NOT generate action arguments or free text.
-9. Provider selection MUST be explicit in configuration and visible in run evidence. Wrangle MUST
-   NOT discover and execute a provider from an untrusted project directory implicitly.
+9. Provider selection MUST be deterministic and visible in run evidence. Desktop tasks MAY use the
+   documented built-in `jev` default when no CLI or environment override is present. Wrangle MUST NOT
+   discover and execute a provider from ambient credentials or an untrusted project directory implicitly.
 10. Falling from a local provider to a cloud provider MUST never happen silently. It requires an
     explicitly enabled profile and MUST be reported to the caller and log.
 11. Providers MUST declare relevant limits, including state/question budget, option count, parallel

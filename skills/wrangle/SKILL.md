@@ -1,7 +1,7 @@
 ---
 name: wrangle
 description: Use a real, scoped macOS app or Safari window for requests such as "Check the #notifications channel in Boehs Slack", "use my browser", or "/wrangle". Prefer the computer tool when available; otherwise use the Safari CLI. Not for static public pages that normal HTTP can fetch.
-compatibility: macOS with Wrangle on PATH. Desktop use requires the repository Pi computer extension, an explicitly configured decision provider, and Accessibility permission. Safari additionally requires JavaScript from Apple Events and its one-time permission prompt.
+compatibility: macOS with Wrangle on PATH. Desktop use requires the repository Pi computer extension, Jev credentials (or an explicitly configured alternative provider), and Accessibility permission. Safari additionally requires JavaScript from Apple Events and its one-time permission prompt.
 ---
 
 # Wrangle

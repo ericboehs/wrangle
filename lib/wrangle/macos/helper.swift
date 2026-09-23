@@ -1,8 +1,9 @@
 import Cocoa
 import ApplicationServices
 import CoreGraphics
+import Darwin
 
-let protocolVersion = "1.1"
+let protocolVersion = "1.2"
 let maxSnapshotNodes = 1_500
 let maxChildrenPerNode = 120
 let maxTextCharacters = 500
@@ -11,12 +12,17 @@ enum HelperFailure: Error {
     case refused(String, String, String?, [String: Any]?)
 }
 
+// LaunchServices leaves launchDate unset for directly executed app bundles such as `tart run`.
+// Kernel process birth time remains available there and still detects PID reuse across app restarts.
 func processInstance(_ app: NSRunningApplication) throws -> String {
-    guard let launched = app.launchDate else {
+    let pid = app.processIdentifier
+    var info = proc_bsdinfo()
+    let expected = MemoryLayout<proc_bsdinfo>.size
+    let actual = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(expected))
+    guard actual == expected, info.pbi_start_tvsec > 0, info.pbi_start_tvusec < 1_000_000 else {
         throw HelperFailure.refused("scope_changed", "The application has no stable launch identity", nil, nil)
     }
-    let milliseconds = Int64(launched.timeIntervalSince1970 * 1000)
-    return "macos-proc-v1:\(app.processIdentifier):\(milliseconds)"
+    return "macos-proc-v2:\(pid):\(info.pbi_start_tvsec):\(info.pbi_start_tvusec)"
 }
 
 func application(_ pid: pid_t, expected: String?) throws -> NSRunningApplication {

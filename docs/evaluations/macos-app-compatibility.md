@@ -81,7 +81,11 @@ script/tart_vm reset --replace
 `start` returns after Tart reports the VM running and writes Tart's process output to a private file
 under `~/.wrangle/tart/`. Add `--headless` for a non-GUI lane. Wrangle, its native helper, fixtures,
 and the acceptance harness must execute inside the guest; host Accessibility APIs see only Tart's VM
-window. The guest remains free of API keys, Apple IDs, and authenticated sessions.
+window. Tart launches its app bundle executable directly, so LaunchServices may omit its launch
+date; the native helper binds that host window to the kernel-reported process birth time instead.
+This makes host Tart scope stable without pretending the embedded guest UI is exposed through host
+Accessibility. Guest application workflows still execute through Wrangle inside the guest. The guest
+remains free of API keys, Apple IDs, and authenticated sessions.
 
 ## Commands
 

@@ -6,6 +6,14 @@ class MacOSHelperTest < Minitest::Test
   parallelize_me!
   FAKE = File.expand_path("fixtures/fake_macos_helper.rb", __dir__)
 
+  def test_native_helper_uses_kernel_process_birth_time_for_directly_launched_apps
+    source = File.read(Wrangle::MacOSHelper::SCRIPT)
+
+    assert_includes source, "proc_pidinfo(pid, PROC_PIDTBSDINFO"
+    assert_includes source, "macos-proc-v2:"
+    refute_includes source, "app.launchDate"
+  end
+
   def test_reads_platform_metadata_without_inheriting_provider_secrets
     helper = build(environment: ENV.to_h.merge("JEV_API_KEY" => "must-not-cross"))
 

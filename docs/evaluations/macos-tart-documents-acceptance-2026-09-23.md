@@ -118,6 +118,22 @@ The private JSON artifacts contain counts and provenance only:
 The structural and read-only artifacts bind acceptance matrix digest
 `ae951810af5b910024594742a07ccad3dab209a15de4e75b6a1abfa61febd268`.
 
+## Host-window identity follow-up
+
+A visible-demo follow-up found that `tart run` executes the Tart app bundle directly. macOS therefore
+reported no LaunchServices launch date even though the process and window were valid, and the native
+helper initially refused to create a process-generation identity. The helper now uses
+`proc_pidinfo(PROC_PIDTBSDINFO)` kernel birth time, preserving PID-reuse protection without requiring
+LaunchServices metadata.
+
+Against the running guest, two consecutive host inventories returned the same process identity and an
+exact-window observation completed successfully. The host observation contained zero action
+candidates and two evidence items, as expected: host Accessibility sees Tart's VM window, not controls
+inside the guest. A separate read-only probe inside the guest found one complete Setup Assistant
+window with two unambiguous actions. This confirms that stable host scope and guest UI control are two
+distinct layers; the identity fix does not authorize pixel clicking or make guest controls available
+to the host driver.
+
 ## Outcome and limits
 
 - TextEdit: `controlled_pass`

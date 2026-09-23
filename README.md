@@ -213,7 +213,8 @@ In a source checkout, the stdlib-only
 retaining UI content. `script/macos_accept finder --runs 5` checks one profile;
 `script/macos_matrix --tier core --runs 5` checks a compatibility wave. App preparation and bounded
 provider tasks are separate opt-in flags, and the checked-in task profiles permit zero delivered
-actions.
+actions. `script/tart_vm` creates, snapshots, starts, stops, and explicitly resets disposable Tart
+acceptance VMs; clone/snapshot refuse replacement and reset requires `--replace`.
 
 Pi discovers [`.pi/extensions/computer.ts`](.pi/extensions/computer.ts) in this checkout. Users can
 ask naturally:
@@ -526,6 +527,7 @@ COVERAGE=1 rake test                      # per-file lines and branches
 COVERAGE=1 COVERAGE_DETAIL=1 rake test    # and which ones are missing
 script/macos_accept --list                # macOS compatibility profiles, no app access
 script/macos_accept finder --runs 5       # read-only exact-window probes
+script/tart_vm status                     # sanitized disposable-VM lifecycle state
 ```
 
 Coverage is measured with Ruby's own `Coverage` module rather than a gem: adding a dependency to

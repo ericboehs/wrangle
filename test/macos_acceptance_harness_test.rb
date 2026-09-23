@@ -317,6 +317,32 @@ class MacOSAcceptanceHarnessTest < Minitest::Test
     assert_raises(Acceptance::HarnessError) { preparer.call(manual) }
   end
 
+  def test_preparer_creates_textedit_and_preview_fixtures_without_shells
+    commands = []
+    preparer = Acceptance::Preparer.new(
+      root: @tmpdir, command: lambda { |*argv|
+        commands << argv
+        true
+      }, sleeper: ->(*) {}
+    )
+    textedit = deep_copy(Acceptance::Matrix.load(Acceptance::DEFAULT_MATRIX).profiles
+                                   .find { |profile| profile["id"] == "textedit" })
+    preview = deep_copy(Acceptance::Matrix.load(Acceptance::DEFAULT_MATRIX).profiles
+                                  .find { |profile| profile["id"] == "preview" })
+
+    assert_equal "prepared", preparer.call(textedit)
+    assert_equal "prepared", preparer.call(preview)
+    assert_equal "Wrangle document acceptance fixture.",
+                 File.read(File.join(@tmpdir, "textedit", "wrangle-document-fixture.txt"))
+    pdf = File.binread(File.join(@tmpdir, "preview", "wrangle-preview-fixture.pdf"))
+    assert pdf.start_with?("%PDF-1.4\n")
+    assert_includes pdf, "Wrangle Preview acceptance fixture."
+    assert_includes commands, ["/usr/bin/open", "-a", "TextEdit",
+                               File.join(@tmpdir, "textedit", "wrangle-document-fixture.txt")]
+    assert_includes commands, ["/usr/bin/open", "-a", "Preview",
+                               File.join(@tmpdir, "preview", "wrangle-preview-fixture.pdf")]
+  end
+
   def test_environment_reports_revision_dirtiness_without_status_content
     success = Object.new
     success.define_singleton_method(:success?) { true }

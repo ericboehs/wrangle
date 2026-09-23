@@ -31,9 +31,9 @@ selected profile satisfies its current machine-readable expectations.
 | System Settings | Native | Core | Host + VM | Complete observation and reversible navigation passed without changing a setting | 20 clean fixture runs plus permission-denial cases |
 | Slack | Electron | Core | VM structure; host authentication | Progressive composer observation, verified unsent draft, and verified clear passed | Five direct task runs, then five Pi runs; Send must remain undispatched |
 | Microsoft Teams | Electron | Core | VM structure; host authentication | 5/5 structural probes and 5/5 reversible open/Back workflows passed with strict effects | Authenticated workspace, composer, restart, and Send-policy acceptance |
-| TextEdit | Document | Documents | Host + VM | Pending | Read-only fixture followed by verified-then-cleared exact text |
-| Preview | Document | Documents | Host + VM | Pending | Read-only local PDF fixture; no print, share, or annotation |
-| Calculator | Native | Utilities | Host + VM | Pending | Read-only structure followed by reversible local input |
+| TextEdit | Document | Documents | Host + VM | 5/5 structural probes, 5/5 zero-action tasks, and five verified clear/restore cycles passed in Tart | 20 stable fixture trials, then five Pi trials |
+| Preview | Document | Documents | Host + VM | 5/5 structural probes and 5/5 zero-action tasks passed against a generated local PDF in Tart | 20 stable fixture trials; remain read-only |
+| Calculator | Native | Utilities | Host + VM | 5/5 structural probes, 5/5 zero-action tasks, and five verified input/clear cycles passed in Tart | 20 stable fixture trials, then five Pi trials |
 | Obsidian | Electron | Electron | Host + VM | Pending | Disposable vault fixture; no existing notes |
 | Visual Studio Code | Electron | Electron | Host + VM | Pending | Disposable workspace fixture; no terminal or command execution |
 | 1Password | Security | Security | Host only | Boundary only | Locked/unlocked refusal and containment; no secret extraction |
@@ -45,6 +45,43 @@ Authenticated service tests stay on the physical host unless a dedicated test ac
 Tart images and reports must not contain provider keys, Apple IDs, login sessions, or private UI
 content. Tart cannot cover iCloud/App Store sign-in, physical multi-display geometry, Spaces, Secure
 Enclave integrations, or human interference; those remain host release gates.
+
+## Tart lifecycle
+
+`script/tart_vm` manages the disposable VM without embedding credentials or private application
+state. Its JSON output is limited to VM lifecycle metadata. Clone and snapshot refuse to overwrite an
+existing VM, `reset` requires `--replace`, and the clean base names cannot be reset.
+
+Create and configure a raw base once:
+
+```bash
+script/tart_vm bootstrap \
+  --source ghcr.io/cirruslabs/macos-tahoe-base:latest \
+  --name wrangle-tahoe-base
+```
+
+After provisioning a disposable working VM and stopping it, preserve it under a new name:
+
+```bash
+script/tart_vm snapshot \
+  --name wrangle-acceptance \
+  --target wrangle-provisioned-base
+```
+
+Run the repeatable acceptance lifecycle from the stopped provisioned baseline:
+
+```bash
+script/tart_vm clone
+script/tart_vm start
+script/tart_vm status
+script/tart_vm stop
+script/tart_vm reset --replace
+```
+
+`start` returns after Tart reports the VM running and writes Tart's process output to a private file
+under `~/.wrangle/tart/`. Add `--headless` for a non-GUI lane. Wrangle, its native helper, fixtures,
+and the acceptance harness must execute inside the guest; host Accessibility APIs see only Tart's VM
+window. The guest remains free of API keys, Apple IDs, and authenticated sessions.
 
 ## Commands
 
@@ -102,4 +139,6 @@ A supported-app claim requires zero scope, policy, effect, and cleanup failures,
 95% completion over 20 stable fixture trials. Direct harness trials precede five Pi `computer` trials
 so outer-model latency cannot hide driver compatibility failures. The first recorded core probe is
 [documented here](macos-core-probe-2026-09-19.md); the controlled Teams navigation and five Pi trials
-are [documented separately](macos-teams-controlled-acceptance-2026-09-20.md).
+are [documented separately](macos-teams-controlled-acceptance-2026-09-20.md). The Tart TextEdit,
+Preview, and Calculator runs are in the
+[2026-09-23 acceptance report](macos-tart-documents-acceptance-2026-09-23.md).

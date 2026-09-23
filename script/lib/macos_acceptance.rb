@@ -25,7 +25,9 @@ module Wrangle
 
     class Matrix
       PROFILE_KEYS = %w[id app family tier environment status preparation expect].freeze
-      PREPARATIONS = %w[finder_fixture open_app settings_accessibility textedit_fixture manual].freeze
+      PREPARATIONS = %w[
+        finder_fixture open_app preview_fixture settings_accessibility textedit_fixture manual
+      ].freeze
 
       attr_reader :document, :profiles
 
@@ -149,6 +151,7 @@ module Wrangle
         when "finder_fixture" then prepare_finder(profile)
         when "settings_accessibility" then open_settings
         when "textedit_fixture" then prepare_textedit(profile)
+        when "preview_fixture" then prepare_preview(profile)
         when "open_app" then command!("/usr/bin/open", "-a", profile.fetch("app"))
         when "manual" then raise HarnessError, "#{profile.fetch("id")} requires manual preparation"
         end
@@ -174,8 +177,34 @@ module Wrangle
 
       def prepare_textedit(profile)
         path = File.join(fixture_directory(profile), "wrangle-document-fixture.txt")
-        File.write(path, "Wrangle document acceptance fixture.\n", mode: "w", perm: 0o600)
+        File.write(path, "Wrangle document acceptance fixture.", mode: "w", perm: 0o600)
         command!("/usr/bin/open", "-a", profile.fetch("app"), path)
+      end
+
+      def prepare_preview(profile)
+        path = File.join(fixture_directory(profile), "wrangle-preview-fixture.pdf")
+        File.binwrite(path, preview_pdf, mode: "w", perm: 0o600)
+        command!("/usr/bin/open", "-a", profile.fetch("app"), path)
+      end
+
+      def preview_pdf
+        objects = [
+          "<< /Type /Catalog /Pages 2 0 R >>",
+          "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+          "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] " \
+          "/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+          "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+        ]
+        content = "BT /F1 18 Tf 72 720 Td (Wrangle Preview acceptance fixture.) Tj ET"
+        objects << "<< /Length #{content.bytesize} >>\nstream\n#{content}\nendstream"
+        pdf = +"%PDF-1.4\n"
+        offsets = objects.each_with_index.map do |object, index|
+          pdf.bytesize.tap { pdf << "#{index + 1} 0 obj\n#{object}\nendobj\n" }
+        end
+        xref = pdf.bytesize
+        pdf << "xref\n0 #{objects.length + 1}\n0000000000 65535 f \n"
+        offsets.each { |offset| pdf << format("%010d 00000 n \n", offset) }
+        pdf << "trailer\n<< /Size #{objects.length + 1} /Root 1 0 R >>\nstartxref\n#{xref}\n%%EOF\n"
       end
 
       def open_settings

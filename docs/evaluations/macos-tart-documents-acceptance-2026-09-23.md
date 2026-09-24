@@ -134,6 +134,22 @@ window with two unambiguous actions. This confirms that stable host scope and gu
 distinct layers; the identity fix does not authorize pixel clicking or make guest controls available
 to the host driver.
 
+## Guest-aware host orchestration prototype
+
+A later working-tree prototype added a host-side `tart_guest` driver that delegates the existing
+native helper through Tart Guest Agent. It binds an explicit VM name, guest application, VM boot
+generation, guest process generation, and exact guest window. The VM identity is checked before and
+after every helper request, and guest process identities are namespaced by that boot generation.
+There is no host Accessibility or pixel fallback.
+
+The deterministic end-to-end fixture covered exact guest inventory, observation, session attachment,
+preview, a durable `not_delivered/read_only` execution receipt, close, and lease cleanup. Live
+inventory then found exactly one Setup Assistant window in the named working VM and confirmed that
+its process identity carried the VM boot namespace. The subsequent live observation stopped with
+`DriverUnavailable` because the guest session was locked after a lifecycle restart. It delivered zero
+actions and did not substitute a host window or another guest root. This is a correct fail-closed
+result, not a completed live observation acceptance; rerun after explicitly unlocking that guest.
+
 ## Outcome and limits
 
 - TextEdit: `controlled_pass`

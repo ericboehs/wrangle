@@ -214,7 +214,18 @@ retaining UI content. `script/macos_accept finder --runs 5` checks one profile;
 `script/macos_matrix --tier core --runs 5` checks a compatibility wave. App preparation and bounded
 provider tasks are separate opt-in flags, and the checked-in task profiles permit zero delivered
 actions. `script/tart_vm` creates, snapshots, starts, stops, and explicitly resets disposable Tart
-acceptance VMs; clone/snapshot refuse replacement and reset requires `--replace`.
+acceptance VMs; clone/snapshot refuse replacement and reset requires `--replace`. The experimental
+read-only guest backend requires both scopes explicitly:
+
+```bash
+wrangle tart-observe --vm wrangle-acceptance --app "Setup Assistant"
+wrangle attach --vm wrangle-acceptance --app "Setup Assistant" --session guest
+```
+
+It verifies the VM boot generation around every guest-helper request and has no mutation or host-pixel
+fallback. Guest sessions expose observe/drill/inspect, identify themselves as read-only, and return a
+`not_delivered/read_only` receipt for every execution attempt. See
+[ADR 0004](docs/adr/0004-tart-guest-driver.md).
 
 Pi discovers [`.pi/extensions/computer.ts`](.pi/extensions/computer.ts) in this checkout. Users can
 ask naturally:
@@ -528,6 +539,8 @@ COVERAGE=1 COVERAGE_DETAIL=1 rake test    # and which ones are missing
 script/macos_accept --list                # macOS compatibility profiles, no app access
 script/macos_accept finder --runs 5       # read-only exact-window probes
 script/tart_vm status                     # sanitized disposable-VM lifecycle state
+wrangle tart-observe --vm VM --app APP    # exact read-only guest application observation
+wrangle attach --vm VM --app APP          # read-only guest observe/drill/inspect session
 ```
 
 Coverage is measured with Ruby's own `Coverage` module rather than a gem: adding a dependency to

@@ -1165,6 +1165,41 @@ class DesktopSessionServerTest < Minitest::Test
     assert_equal "ArgumentError", reply["class"]
   end
 
+  def test_tart_guest_session_reports_read_only_driver_provenance
+    arguments = { driver: @driver, scope: self.class.scope, registry: @registry, log: @log }
+    server = Wrangle::DesktopSessionServer.new(@socket, { "driver" => "tart_guest" }, **arguments)
+
+    status = server.send(:status)
+    assert_equal "tart_guest", status["driver"]
+    assert status["read_only"]
+    observation = server.send(:observe)
+    assert_equal "tart_guest", observation["driver"]
+    assert observation["read_only"]
+  end
+
+  def test_tart_guest_session_builds_the_explicit_vm_and_app_driver
+    options = {
+      "driver" => "tart_guest", "vm" => "fixture-vm", "app" => "Finder", "guest_helper" => "/helper"
+    }
+    configured = Object.new
+    received = nil
+    guest_driver_class = Object.new
+    guest_driver_class.define_singleton_method(:new) do |**arguments|
+      received = arguments
+      configured
+    end
+    server = Wrangle::DesktopSessionServer.new(@socket, options, guest_driver_class:)
+
+    actual = server.send(:configured_driver)
+    assert_same configured, actual
+    assert_equal({ vm_name: "fixture-vm", guest_app: "Finder", guest_helper: "/helper" }, received)
+    assert_instance_of Wrangle::MacOSDriver,
+                       Wrangle::DesktopSessionServer.new(@socket, {}).send(:configured_driver)
+    assert_raises(Wrangle::ConfigurationError) do
+      Wrangle::DesktopSessionServer.new(@socket, { "driver" => "pixel" }).send(:configured_driver)
+    end
+  end
+
   private
 
   def serving

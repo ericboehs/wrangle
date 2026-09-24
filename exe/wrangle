@@ -24,6 +24,9 @@ module Wrangle
       One-shot:
         wrangle windows [--titles]        list Safari windows
         wrangle windows --app APP         list scoped macOS window ids without titles
+        wrangle windows --vm VM --app APP  list exact windows inside one running Tart guest
+        wrangle tart-observe --vm VM --app APP
+                                          read one exact Tart guest window without mutation
         wrangle displays [--driver macos] list displays in top-left window coordinates
         wrangle doctor                    check macOS driver capabilities and permissions
         wrangle task --app APP --goal GOAL
@@ -41,6 +44,8 @@ module Wrangle
                           [--backend mcp] drive safaridriver's own tab instead of Apple Events
         wrangle attach <window_id>        take over a Safari window you already have open
         wrangle attach --app APP <w-id>   scope one macOS application window
+        wrangle attach --vm VM --app APP [<w-id>]
+                                          open a read-only exact guest-window session
                        [--frontmost 3]     take the front window after a countdown
                        [--pick]            choose one listed application window
                        [--cooperative]     permit another session on the same root
@@ -73,8 +78,7 @@ module Wrangle
       command = argv.shift
       options = parse(argv)
       case command
-      when "windows" then windows(options)
-      when "displays" then displays(options)
+      when "windows", "tart-observe", "displays" then public_send(command.tr("-", "_"), options)
       when "doctor", "qualify", "task" then public_send(command, options)
       when "open" then start({ "url" => argv.first }, options)
       when "attach" then attach(argv.first, options)
@@ -118,6 +122,8 @@ module Wrangle
       parser.on("--backend NAME") { |v| options[:backend] = v }
       parser.on("--driver NAME") { |v| options[:driver] = v }
       parser.on("--app APP") { |v| options[:app] = v }
+      parser.on("--vm NAME") { |v| options[:vm] = v }
+      parser.on("--guest-helper PATH") { |v| options[:guest_helper] = v }
       parser.on("--frontmost [SECONDS]", Float) { |v| options[:frontmost] = v || 3.0 }
       parser.on("--pick") { options[:pick] = true }
       parser.on("--cooperative") { options[:cooperative] = true }
@@ -156,6 +162,7 @@ module Wrangle
     # --- one-shot ------------------------------------------------------------------------------
 
     def windows(options)
+      return tart_guest_windows(options) if options[:vm]
       return macos_windows(options) if options[:app]
 
       listed = Wrangle::Safari.windows(titles: options[:titles])
@@ -172,6 +179,65 @@ module Wrangle
 
     def macos_windows(options)
       listed = Wrangle::MacOSHelper.new.windows(app: options[:app], titles: options[:titles])
+      show_macos_windows(listed, options)
+    end
+
+    def tart_guest_windows(options)
+      return warn("Tart guest windows need --vm VM and --app APP") || USAGE if options[:app].to_s.empty?
+
+      driver = tart_guest_driver(options)
+      listed = driver.windows(app: options[:app], titles: options[:titles])
+      show_macos_windows(listed, options)
+    ensure
+      driver&.close
+    end
+
+    def tart_observe(options)
+      if options[:vm].to_s.empty? || options[:app].to_s.empty?
+        return warn("tart-observe needs --vm VM and --app APP") || USAGE
+      end
+
+      driver = tart_guest_driver(options)
+      doctor = driver.doctor
+      unless doctor["ready"]
+        reason = doctor["session_locked"] ? "The Tart guest session is locked" : "The Tart guest driver is not ready"
+        raise DriverUnavailable, reason
+      end
+
+      window = exact_guest_window(driver.windows(app: options[:app], titles: false), options[:app])
+      scope = driver.attach(window_id: window.fetch("id"), app: window.fetch("app_name"))
+      observation = driver.observe(scope)
+      if options[:json]
+        return emit(
+          "schema" => "wrangle.tart-guest-observation.v1", "vm" => options[:vm],
+          "app" => options[:app], "read_only" => true, "observation" => observation
+        )
+      end
+
+      puts "guest   #{options[:vm]} (read only)"
+      desktop_report(observation, options)
+    ensure
+      driver&.close
+    end
+
+    def tart_guest_driver(options)
+      Wrangle::TartGuestDriver.new(
+        vm_name: options[:vm], guest_app: options[:app],
+        guest_helper: options[:guest_helper] || Wrangle::TartGuestDriver::DEFAULT_HELPER
+      )
+    end
+
+    def exact_guest_window(windows, app)
+      raise ScopeLost, "No visible #{app} window is available in the Tart guest" if windows.empty?
+      return windows.first if windows.one?
+
+      focused = windows.select { |window| window["focused"] == true }
+      return focused.first if focused.one?
+
+      raise ScopeLost, "More than one #{app} window is visible in the Tart guest and none is uniquely focused"
+    end
+
+    def show_macos_windows(listed, options)
       return emit(listed) if options[:json]
 
       listed.each do |window|
@@ -307,12 +373,32 @@ module Wrangle
     # --- session -------------------------------------------------------------------------------
 
     def attach(identifier, options)
-      if options[:app] || options[:frontmost] || options[:pick]
+      if options[:vm]
+        chosen = choose_tart_guest_window(identifier, options)
+        target = {
+          "driver" => "tart_guest", "vm" => options[:vm], "window_id" => chosen["id"],
+          "app" => options[:app], "guest_helper" => options[:guest_helper] || TartGuestDriver::DEFAULT_HELPER
+        }
+        start(target, options)
+      elsif options[:app] || options[:frontmost] || options[:pick]
         chosen = choose_macos_window(identifier, options)
         start({ "driver" => "macos", "window_id" => chosen["id"], "app" => chosen["app_name"] }, options)
       else
         start({ "window_id" => Integer(identifier, exception: false) }, options)
       end
+    end
+
+    def choose_tart_guest_window(identifier, options)
+      raise ArgumentError, "Tart guest attachment needs --app" if options[:app].to_s.empty?
+      if options[:frontmost] || options[:pick]
+        raise ArgumentError, "Tart guest attachment does not accept --frontmost or --pick"
+      end
+      return { "id" => identifier, "app_name" => options[:app] } unless identifier.to_s.empty?
+
+      driver = tart_guest_driver(options)
+      exact_guest_window(driver.windows(app: options[:app], titles: false), options[:app])
+    ensure
+      driver&.close
     end
 
     def choose_macos_window(identifier, options)
@@ -353,15 +439,18 @@ module Wrangle
       windows[selected - 1]
     end
 
+    DESKTOP_DRIVERS = %w[macos tart_guest].freeze
+
     def start(target, options)
-      required = target["driver"] == "macos" ? target.values_at("window_id", "app") : [target.values.first]
+      desktop = DESKTOP_DRIVERS.include?(target["driver"])
+      required = desktop ? target.values_at("window_id", "app") : [target.values.first]
       return warn("open needs a url; attach needs a window id and --app for macOS") || USAGE if required.any?(&:nil?)
 
       socket = SessionServer.socket_path(options[:session])
       return warn("A session named #{options[:session].inspect} is already running.") || USAGE if
         SessionClient.new(socket).running?
 
-      return spawn_desktop(socket, target, options) if target["driver"] == "macos"
+      return spawn_desktop(socket, target, options) if desktop
 
       backend = (options[:backend] || "jxa").to_s
       unless %w[jxa mcp].include?(backend)
@@ -384,7 +473,7 @@ module Wrangle
 
     def spawn_desktop(socket, target, options)
       if options[:backend] || options[:display] || options[:side]
-        return warn("macOS attachment does not accept Safari backend or window-placement options") || USAGE
+        return warn("Desktop attachment does not accept Safari backend or window-placement options") || USAGE
       end
 
       target["concurrency"] = options[:cooperative] ? "cooperative" : "exclusive"
@@ -439,7 +528,7 @@ module Wrangle
     def spawn_server(socket, target)
       log = File.join(File.dirname(socket), "#{File.basename(socket, ".sock")}.log")
       FileUtils.mkdir_p(File.dirname(socket))
-      command = target["driver"] == "macos" ? "__serve_macos" : "__serve"
+      command = DESKTOP_DRIVERS.include?(target["driver"]) ? "__serve_macos" : "__serve"
       pid = Process.spawn(RbConfig.ruby, __FILE__, command, socket, JSON.generate(target),
                           out: log, err: log, pgroup: true)
       Process.detach(pid)

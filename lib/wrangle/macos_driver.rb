@@ -22,8 +22,10 @@ module Wrangle
 
     attr_reader :helper
 
-    def initialize(helper: MacOSHelper.new)
+    def initialize(helper: MacOSHelper.new, observation_driver: "macos", read_only: false)
       @helper = helper
+      @observation_driver = observation_driver
+      @read_only = read_only
       @prepared_processes = {}
       @native_snapshots = {}
       @native_targets = {}
@@ -127,7 +129,9 @@ module Wrangle
     private
 
     def observation(scope, snapshot, window, setup)
-      DesktopObservation.new(scope:, snapshot:, window:).state.tap do |state|
+      DesktopObservation.new(
+        scope:, snapshot:, window:, driver: @observation_driver, read_only: @read_only
+      ).state.tap do |state|
         state["observation_setup"] = setup.merge("snapshot_source" => snapshot.fetch("source"))
       end
     end

@@ -15,6 +15,7 @@ require_relative "macos_driver"
 require_relative "provider_factory"
 require_relative "scope_registry"
 require_relative "session_server"
+require_relative "tart_guest_driver"
 
 module Wrangle
   # Holds one exact macOS root window across short-lived CLI invocations.
@@ -28,7 +29,7 @@ module Wrangle
     def self.run(socket_path, options) = new(socket_path, options).run
 
     def initialize(socket_path, options, driver: nil, scope: nil, policy: DesktopPolicy.new,
-                   registry: nil, log: nil, provider: nil)
+                   registry: nil, log: nil, provider: nil, guest_driver_class: TartGuestDriver)
       @socket_path = socket_path
       @options = options
       @driver = driver
@@ -37,6 +38,7 @@ module Wrangle
       @registry = registry
       @log = log
       @provider = provider
+      @guest_driver_class = guest_driver_class
       @autonomy = DesktopAutonomy.new(provider) if provider
       @observation = nil
       @view = nil
@@ -66,14 +68,27 @@ module Wrangle
     private
 
     def start_runtime(log_session:)
-      @driver ||= MacOSDriver.new
+      @driver ||= configured_driver
       @scope ||= @driver.attach(window_id: @options.fetch("window_id"), app: @options.fetch("app"))
       @registry ||= ScopeRegistry.new
       @lease = @registry.acquire(@scope, mode: @options.fetch("concurrency", "exclusive"))
       @provider ||= ProviderFactory.build(@options) if @options["provider"]
       @autonomy ||= DesktopAutonomy.new(@provider) if @provider
       @log ||= EventLog.new(session: log_session)
-      @log.record("attach", "scope_id" => @scope.id, "driver" => "macos", "concurrency" => @lease.mode)
+      fields = {
+        "scope_id" => @scope.id, "driver" => @options.fetch("driver", "macos"),
+        "concurrency" => @lease.mode
+      }
+      @log.record("attach", fields)
+    end
+
+    def configured_driver
+      name = @options.fetch("driver", "macos")
+      return MacOSDriver.new if name == "macos"
+      raise ConfigurationError, "Unknown desktop driver" unless name == "tart_guest"
+
+      helper = @options.fetch("guest_helper", TartGuestDriver::DEFAULT_HELPER)
+      @guest_driver_class.new(vm_name: @options.fetch("vm"), guest_app: @options.fetch("app"), guest_helper: helper)
     end
 
     def serve(server)
@@ -131,8 +146,9 @@ module Wrangle
 
     def status
       {
-        "pid" => Process.pid, "driver" => "macos", "scope_id" => @scope.id,
+        "pid" => Process.pid, "driver" => @options.fetch("driver", "macos"), "scope_id" => @scope.id,
         "root" => @scope.root, "app" => @scope.app, "owned" => false,
+        "read_only" => @options["driver"] == "tart_guest",
         "observed" => !@observation.nil?, "actions_taken" => @actions,
         "pending_proposals" => @proposals.length, "poisoned" => !@poisoned.nil?,
         "concurrency" => @lease&.mode || @options.fetch("concurrency", "exclusive"),
@@ -314,7 +330,8 @@ module Wrangle
                  .merge("ref" => index + 1)
       end
       {
-        "schema" => observation["schema"], "driver" => "macos",
+        "schema" => observation["schema"], "driver" => @options.fetch("driver", "macos"),
+        "read_only" => @options["driver"] == "tart_guest",
         "scope" => observation["scope"].slice("id", "root", "app"),
         "revision" => observation["revision"], "complete" => observation["complete"],
         "coverage" => observation["coverage"], "candidates" => candidates,

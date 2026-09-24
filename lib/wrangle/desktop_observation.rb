@@ -114,10 +114,12 @@ module Wrangle
       end
     end
 
-    def initialize(scope:, snapshot:, window:)
+    def initialize(scope:, snapshot:, window:, driver: "macos", read_only: false)
       @scope = scope
       @snapshot = snapshot
       @window = window
+      @driver = driver
+      @read_only = read_only
       validate!
       @state = build
     end
@@ -145,7 +147,7 @@ module Wrangle
       walk(@snapshot["tree"], observed_candidates)
       candidates, ambiguous_actions = self.class.reject_ambiguous_actions(observed_candidates)
       body = {
-        "schema" => "wrangle.observation.v1", "driver" => "macos",
+        "schema" => "wrangle.observation.v1", "driver" => @driver,
         "scope" => { "id" => @scope.id, "root" => @scope.root, "app" => @scope.app,
                      "pid" => @scope.pid, "process_instance" => @scope.process_instance },
         "window" => @window.slice("id", "bounds", "focused", "visible"),
@@ -154,6 +156,7 @@ module Wrangle
         "ambiguous_actions" => ambiguous_actions,
         "coverage" => coverage(candidates, ambiguous_actions)
       }
+      body["read_only"] = true if @read_only
       body["revision"] = fingerprint(body)
       body
     end

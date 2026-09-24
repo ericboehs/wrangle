@@ -87,6 +87,21 @@ This makes host Tart scope stable without pretending the embedded guest UI is ex
 Accessibility. Guest application workflows still execute through Wrangle inside the guest. The guest
 remains free of API keys, Apple IDs, and authenticated sessions.
 
+The experimental guest backend makes both scopes explicit and refuses all mutations:
+
+```bash
+wrangle windows --vm wrangle-acceptance --app "Setup Assistant"
+wrangle tart-observe --vm wrangle-acceptance --app "Setup Assistant" --json
+wrangle attach --vm wrangle-acceptance --app "Setup Assistant" --session guest
+```
+
+It verifies the exact VM is running and its kernel boot generation is unchanged before and after every
+guest-helper request. A reboot, replacement, unavailable guest agent, ambiguous guest window, or
+changed guest process loses scope. The VM boot identity is also namespaced into the guest process
+identity so leases from different VMs cannot alias. Guest sessions are visibly marked read-only and
+execution returns `not_delivered/read_only` without invoking the helper. There is no fallback to the
+host Tart view or pixel coordinates. See [ADR 0004](../adr/0004-tart-guest-driver.md).
+
 ## Commands
 
 List profiles without touching applications:

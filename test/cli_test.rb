@@ -13,6 +13,7 @@ class CliTest < Minitest::Test
   EXE = File.expand_path("../exe/wrangle", __dir__)
   LIB = File.expand_path("../lib", __dir__)
   FAKE_MACOS = File.expand_path("fixtures/fake_macos_helper.rb", __dir__)
+  FAKE_TART = File.expand_path("fixtures/fake_tart.rb", __dir__)
 
   def run_cli(*argv, env: {})
     out = IO.popen([env, RbConfig.ruby, "--disable-gems", "-I", LIB, EXE, *argv], err: %i[child out], &:read)
@@ -66,6 +67,58 @@ class CliTest < Minitest::Test
       out, status = run_cli("displays", "--driver", "macos", env:)
       assert_equal 0, status
       assert_match(/0\s+x=/, out)
+    end
+  end
+
+  def test_tart_guest_window_inventory_and_read_only_observation
+    with_fake_tart_commands do |env, helper|
+      out, status = run_cli(
+        "windows", "--vm", "fixture-vm", "--app", "Finder", "--guest-helper", helper, "--json", env:
+      )
+      windows = JSON.parse(out)
+      assert_equal 0, status
+      assert_equal "w-1", windows.first["id"]
+
+      out, status = run_cli(
+        "tart-observe", "--vm", "fixture-vm", "--app", "Finder",
+        "--guest-helper", helper, "--json", env:
+      )
+      result = JSON.parse(out)
+      assert_equal 0, status
+      assert_equal "wrangle.tart-guest-observation.v1", result["schema"]
+      assert_equal "fixture-vm", result["vm"]
+      assert result["read_only"]
+      assert_equal "tart_guest", result.dig("observation", "driver")
+      assert result.dig("observation", "read_only")
+      assert_equal "Native Open", result.dig("observation", "candidates", 0, "label")
+    end
+  end
+
+  def test_tart_guest_session_is_bound_to_one_app_and_refuses_mutation
+    with_fake_tart_commands do |env, helper|
+      out, status = run_cli(
+        "attach", "--vm", "fixture-vm", "--app", "Finder", "--guest-helper", helper,
+        "--session", "guest", "--json", env:
+      )
+      assert_equal 0, status, out
+      observation = JSON.parse(out).fetch("value")
+      assert_equal "wrangle.observation.v1", observation["schema"]
+      assert_equal "tart_guest", observation["driver"]
+      assert observation["read_only"]
+
+      out, status = run_cli("preview", "1", "--session", "guest", "--json", env:)
+      assert_equal 0, status
+      proposal = JSON.parse(out).dig("value", "proposal_id")
+
+      out, status = run_cli("execute", proposal, "--session", "guest", "--json", env:)
+      receipt = JSON.parse(out).fetch("value")
+      assert_equal 0, status
+      assert_equal "not_delivered", receipt["dispatch"]
+      assert_equal "read_only", receipt["reason"]
+
+      _, status = run_cli("close", "--session", "guest", env:)
+      assert_equal 0, status
+      assert_empty Dir.glob(File.join(env.fetch("WRANGLE_HOME"), "scopes", "*"))
     end
   end
 
@@ -267,9 +320,18 @@ class CliTest < Minitest::Test
     end
   end
 
+  def with_fake_tart_commands
+    Dir.mktmpdir("wrangle-tart-cli") do |directory|
+      tart = wrapper(directory, "tart", FAKE_TART, nil)
+      helper = wrapper(directory, "guest-helper", FAKE_MACOS, "driver")
+      yield({ "WRANGLE_TART" => tart, "WRANGLE_HOME" => directory }, helper)
+    end
+  end
+
   def wrapper(directory, name, fixture, mode)
     path = File.join(directory, name)
-    command = [RbConfig.ruby, "--disable-gems", fixture, mode].map { |part| Shellwords.escape(part) }.join(" ")
+    parts = [RbConfig.ruby, "--disable-gems", fixture, mode]
+    command = parts.compact.map { |part| Shellwords.escape(part) }.join(" ")
     File.write(path, "#!/bin/sh\nexec #{command} \"$@\"\n")
     File.chmod(0o700, path)
     path

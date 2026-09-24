@@ -47,6 +47,19 @@ class DesktopObservationTest < Minitest::Test
     assert_match(/\A[0-9a-f]{24}\z/, state["revision"])
   end
 
+  def test_binds_guest_driver_and_read_only_provenance_into_the_revision
+    snapshot = snapshot_with(tree)
+    guest = Wrangle::DesktopObservation.new(
+      scope: @scope, snapshot:, window: @window, driver: "tart_guest", read_only: true
+    ).state
+    host = Wrangle::DesktopObservation.new(scope: @scope, snapshot:, window: @window).state
+
+    assert_equal "tart_guest", guest["driver"]
+    assert guest["read_only"]
+    refute_equal host["revision"], guest["revision"]
+    refute_includes host, "read_only"
+  end
+
   def test_omits_window_controls_and_disabled_mutations_from_agent_candidates
     snapshot = snapshot_with(
       { "role" => "window", "children" => [

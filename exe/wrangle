@@ -343,7 +343,9 @@ module Wrangle
       provider_options["provider_trace"] ||= suite if options[:provider] == "replay"
       provider = ProviderFactory.build(provider_options)
       cases = ProviderQualification.load(suite)
-      report = ProviderQualification.run(provider, cases)
+      report = ProviderQualification.run(
+        provider, cases, endpoint: ProviderFactory.qualification_endpoint(provider_options)
+      )
       write_qualification(options[:output], report) if options[:output]
       return emit(report) if options[:json]
 

@@ -85,9 +85,43 @@ module Wrangle
       end
 
       def verify_press(candidate, target, before, after)
+        if calculator_digit_press_effect?(candidate, before, after)
+          return changed_revision?(before, after) ? "verified" : "unverified"
+        end
         return "unchanged" if press_signature(candidate) == press_signature(target)
 
         changed_revision?(before, after) ? "verified" : "unverified"
+      end
+
+      def calculator_digit_press_effect?(candidate, before, after)
+        digit = candidate["label"].to_s
+        return false unless candidate["role"] == "button" && digit.match?(/\A\d\z/)
+        return false unless same_calculator_scope?(before, after) && complete?(before) && complete?(after)
+
+        previous = calculator_display(before)
+        current = calculator_display(after)
+        return false unless previous && current
+
+        expected = previous == "0" ? digit : "#{previous}#{digit}"
+        current == expected
+      end
+
+      def same_calculator_scope?(before, after)
+        before_scope = before["scope"]
+        after_scope = after["scope"]
+        before_scope.is_a?(Hash) && after_scope.is_a?(Hash) &&
+          before_scope["app"] == "Calculator" && after_scope["app"] == "Calculator" &&
+          !before_scope["id"].to_s.empty? && before_scope["id"] == after_scope["id"]
+      end
+
+      def calculator_display(observation)
+        values = observation_elements(observation).filter_map do |element|
+          next unless element["role"] == "statictext" && element["value"].is_a?(String)
+
+          normalized = element["value"].gsub(/[^0-9.-]/, "")
+          normalized unless normalized.empty?
+        end.uniq
+        values.one? ? values.first : nil
       end
 
       def press_signature(candidate)

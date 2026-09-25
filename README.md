@@ -193,7 +193,8 @@ interfaces; an outer agent does not orchestrate them during a normal task.
 Desktop tasks use Jev when neither `--provider` nor `WRANGLE_DESKTOP_PROVIDER` is set. An explicitly
 configured provider overrides that default, and Wrangle never falls back between providers. No provider is
 mutation-qualified merely because its API is compatible. Qualification receipts are bound to the canonical
-suite, provider/model (and exact replay-trace digest), and expire after seven days:
+suite and provider/model, to the exact configured endpoint for Jev, and to the exact trace digest for replay;
+they expire after seven days:
 
 ```bash
 wrangle qualify --provider replay --provider-trace trace.jsonl --output qualification.json
@@ -213,13 +214,18 @@ In a source checkout, the stdlib-only
 retaining UI content. `script/macos_accept finder --runs 5` checks one profile;
 `script/macos_matrix --tier core --runs 5` checks a compatibility wave. App preparation and bounded
 provider tasks are separate opt-in flags, and the checked-in task profiles permit zero delivered
-actions. `script/tart_vm` creates, snapshots, starts, stops, and explicitly resets disposable Tart
-acceptance VMs; clone/snapshot refuse replacement and reset requires `--replace`. The experimental
-read-only guest backend requires both scopes explicitly:
+actions. `script/tart_vm` creates, preflights, snapshots, starts, stops, and explicitly resets
+disposable Tart acceptance VMs; clone/snapshot refuse replacement and reset requires `--replace`.
+Clone and reset default to the validated `wrangle-provisioned-base-v2`; it, the original
+`wrangle-provisioned-base`, and the Pi-enabled `wrangle-pi-base` are protected from reset replacement.
+The guest preflight rejects a
+running or login-restored Setup Assistant. `start` must pass that check
+before returning a fixture as ready, and `snapshot` preflights and stops its running source before
+preserving it. The experimental read-only guest backend requires both scopes explicitly:
 
 ```bash
-wrangle tart-observe --vm wrangle-acceptance --app "Setup Assistant"
-wrangle attach --vm wrangle-acceptance --app "Setup Assistant" --session guest
+wrangle tart-observe --vm wrangle-acceptance --app Finder
+wrangle attach --vm wrangle-acceptance --app Finder --session guest
 ```
 
 It verifies the VM boot generation around every guest-helper request and has no mutation or host-pixel
@@ -539,6 +545,7 @@ COVERAGE=1 COVERAGE_DETAIL=1 rake test    # and which ones are missing
 script/macos_accept --list                # macOS compatibility profiles, no app access
 script/macos_accept finder --runs 5       # read-only exact-window probes
 script/tart_vm status                     # sanitized disposable-VM lifecycle state
+script/tart_vm preflight                  # reject active/persisted Setup Assistant state
 wrangle tart-observe --vm VM --app APP    # exact read-only guest application observation
 wrangle attach --vm VM --app APP          # read-only guest observe/drill/inspect session
 ```

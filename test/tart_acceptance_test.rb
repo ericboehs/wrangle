@@ -8,13 +8,17 @@ class TartAcceptanceTest < Minitest::Test
 
   class FakeShell
     attr_reader :calls, :spawns
-    attr_accessor :alive, :fail_command
+    attr_accessor :alive, :fail_command, :guest_preflight, :stop_on_exec
 
     def initialize(vms = [])
       @vms = vms
       @calls = []
       @spawns = []
       @alive = true
+      @guest_preflight = {
+        "setup_assistant_running" => false,
+        "setup_assistant_persisted" => false
+      }
     end
 
     def call(*argv)
@@ -37,6 +41,13 @@ class TartAcceptanceTest < Minitest::Test
       when "delete"
         @vms.reject! { |item| item["Name"] == argv[2] }
         result
+      when "exec"
+        if stop_on_exec
+          selected = @vms.find { |item| item["Name"] == argv[2] }
+          selected.merge!("Running" => false, "State" => "stopped")
+        end
+        output = guest_preflight.is_a?(String) ? guest_preflight : JSON.generate(guest_preflight)
+        result(output)
       else
         result(success: false)
       end
@@ -67,7 +78,9 @@ class TartAcceptanceTest < Minitest::Test
 
   def setup
     @shell = FakeShell.new([FakeShell.new.vm(Acceptance::DEFAULT_BASE),
-                            FakeShell.new.vm(Acceptance::DEFAULT_PROVISIONED)])
+                            FakeShell.new.vm(Acceptance::ORIGINAL_PROVISIONED),
+                            FakeShell.new.vm(Acceptance::DEFAULT_PROVISIONED),
+                            FakeShell.new.vm(Acceptance::PI_PROVISIONED)])
     @tick = 0.0
     @manager = Acceptance::Manager.new(
       shell: @shell, tart: "/fixture/tart", log_root: "/tmp/wrangle-tart-test",
@@ -89,6 +102,10 @@ class TartAcceptanceTest < Minitest::Test
   def test_clone_randomizes_identity_and_refuses_collisions
     report = @manager.clone
 
+    assert_equal "wrangle-provisioned-base", Acceptance::ORIGINAL_PROVISIONED
+    assert_equal "wrangle-provisioned-base-v2", Acceptance::DEFAULT_PROVISIONED
+    assert_equal "wrangle-pi-base", Acceptance::PI_PROVISIONED
+    assert_includes Acceptance::PROTECTED_BASES, Acceptance::PI_PROVISIONED
     assert_equal "clone", report["command"]
     assert_equal Acceptance::DEFAULT_PROVISIONED, report.dig("vm", "source_vm")
     assert_includes @shell.calls, ["/fixture/tart", "set", Acceptance::DEFAULT_VM,
@@ -97,15 +114,84 @@ class TartAcceptanceTest < Minitest::Test
     assert_match(/already exists/, error.message)
   end
 
-  def test_snapshot_requires_a_stopped_source_and_new_target
+  def test_snapshot_preflights_and_stops_a_running_source_before_preserving_it
     @manager.clone
-    report = @manager.snapshot(target: "fixture-snapshot")
-    assert_equal "snapshot", report["command"]
-
     @manager.start
-    assert_raises(Acceptance::LifecycleError) do
-      @manager.snapshot(target: "running-snapshot")
+    report = @manager.snapshot(target: "fixture-snapshot")
+
+    assert_equal "snapshot", report["command"]
+    assert report.dig("vm", "source_preflight", "safe")
+    refute @manager.status.dig("vm", "running")
+    error = assert_raises(Acceptance::LifecycleError) do
+      @manager.snapshot(target: "stopped-snapshot")
     end
+    assert_match(/Start .* before preserving/, error.message)
+  end
+
+  def test_preflight_refuses_running_or_persisted_setup_assistant
+    @manager.clone
+    @manager.start
+    assert @manager.preflight.dig("vm", "preflight", "safe")
+
+    @shell.guest_preflight = {
+      "setup_assistant_running" => true,
+      "setup_assistant_persisted" => false
+    }
+    running = assert_raises(Acceptance::LifecycleError) { @manager.preflight }
+    assert_match(/Setup Assistant is running/, running.message)
+
+    @shell.guest_preflight = {
+      "setup_assistant_running" => false,
+      "setup_assistant_persisted" => true
+    }
+    persisted = assert_raises(Acceptance::LifecycleError) { @manager.preflight }
+    assert_match(/persisted for login restoration/, persisted.message)
+  end
+
+  def test_start_stops_a_new_vm_that_fails_preflight
+    @manager.clone
+    @shell.guest_preflight = {
+      "setup_assistant_running" => true,
+      "setup_assistant_persisted" => false
+    }
+
+    error = assert_raises(Acceptance::LifecycleError) { @manager.start }
+    assert_match(/Setup Assistant is running/, error.message)
+    refute @manager.status.dig("vm", "running")
+  end
+
+  def test_start_reports_when_a_failed_preflight_vm_cannot_be_stopped
+    @manager.clone
+    @shell.guest_preflight = {
+      "setup_assistant_running" => true,
+      "setup_assistant_persisted" => false
+    }
+    @shell.fail_command = "stop"
+
+    error = assert_raises(Acceptance::LifecycleError) { @manager.start }
+    assert_match(/failed guest preflight and could not be stopped/, error.message)
+  end
+
+  def test_preflight_fails_closed_on_unavailable_or_invalid_guest_output
+    @manager.clone
+    @manager.start
+    @shell.fail_command = "exec"
+    unavailable = assert_raises(Acceptance::LifecycleError) { @manager.preflight(timeout: 1) }
+    assert_match(/Timed out waiting/, unavailable.message)
+
+    @shell.fail_command = nil
+    @shell.guest_preflight = "not-json"
+    invalid = assert_raises(Acceptance::LifecycleError) { @manager.preflight }
+    assert_equal "Tart guest preflight returned invalid output", invalid.message
+  end
+
+  def test_preflight_detects_a_vm_that_stops_during_confirmation
+    @manager.clone
+    @manager.start
+    @shell.stop_on_exec = true
+
+    error = assert_raises(Acceptance::LifecycleError) { @manager.preflight }
+    assert_match(/stopped before its guest preflight completed/, error.message)
   end
 
   def test_start_stop_and_idempotent_transitions
@@ -156,6 +242,14 @@ class TartAcceptanceTest < Minitest::Test
     assert_raises(Acceptance::LifecycleError) do
       @manager.reset(name: Acceptance::DEFAULT_PROVISIONED, source: Acceptance::DEFAULT_BASE, replace: true)
     end
+    assert_raises(Acceptance::LifecycleError) do
+      @manager.reset(name: Acceptance::ORIGINAL_PROVISIONED,
+                     source: Acceptance::DEFAULT_PROVISIONED, replace: true)
+    end
+    assert_raises(Acceptance::LifecycleError) do
+      @manager.reset(name: Acceptance::PI_PROVISIONED,
+                     source: Acceptance::DEFAULT_PROVISIONED, replace: true)
+    end
 
     report = @manager.reset(replace: true)
     assert_equal "reset", report["command"]
@@ -197,6 +291,20 @@ class TartAcceptanceTest < Minitest::Test
 
     assert_equal 0, Acceptance::CLI.run(["--help"], out:, err:, manager: @manager)
     assert_includes out.string, "Commands: status"
+    assert_includes out.string, "Default provisioned source: wrangle-provisioned-base-v2"
+    assert_empty err.string
+  end
+
+  def test_cli_dispatches_preflight
+    @manager.clone
+    @manager.start
+    out = StringIO.new
+    err = StringIO.new
+
+    status = Acceptance::CLI.run(["preflight"], out:, err:, manager: @manager)
+
+    assert_equal 0, status
+    assert JSON.parse(out.string).dig("vm", "preflight", "safe")
     assert_empty err.string
   end
 

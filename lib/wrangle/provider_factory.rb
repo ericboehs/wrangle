@@ -29,6 +29,15 @@ module Wrangle
       )
     end
 
+    def self.qualification_endpoint(options)
+      return nil unless options.fetch("provider") == "jev"
+
+      endpoint = options["provider_endpoint"] || ENV["JEV_ENDPOINT"] || Jev::DEFAULT_ENDPOINT
+      URI.parse(endpoint).to_s
+    rescue URI::InvalidURIError
+      raise ConfigurationError, "Decision provider endpoint is invalid"
+    end
+
     def self.replay_model(options)
       path = options["provider_trace"]
       raise ConfigurationError, "Replay provider requires --provider-trace" if path.to_s.empty?
@@ -82,10 +91,16 @@ module Wrangle
       report["schema"] == ProviderQualification::REPORT_SCHEMA && report["qualified"] == true &&
         age.between?(0, ProviderQualification::REPORT_TTL) &&
         report["protocol"] == DecisionProvider::PROTOCOL && report["provider"] == provider &&
-        report["model"] == model && report["suite_sha256"] == ProviderQualification.default_suite_digest
+        report["model"] == model && report["suite_sha256"] == ProviderQualification.default_suite_digest &&
+        qualification_endpoint_matches?(report, options, provider)
     rescue Errno::ENOENT, JSON::ParserError, KeyError, ArgumentError
       false
     end
     private_class_method :qualified?
+
+    def self.qualification_endpoint_matches?(report, options, provider)
+      provider != "jev" || report["endpoint"] == qualification_endpoint(options)
+    end
+    private_class_method :qualification_endpoint_matches?
   end
 end

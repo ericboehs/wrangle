@@ -50,7 +50,9 @@ Enclave integrations, or human interference; those remain host release gates.
 
 `script/tart_vm` manages the disposable VM without embedding credentials or private application
 state. Its JSON output is limited to VM lifecycle metadata. Clone and snapshot refuse to overwrite an
-existing VM, `reset` requires `--replace`, and the clean base names cannot be reset.
+existing VM, `reset` requires `--replace`, and the clean base names cannot be reset. Its guest
+preflight rejects both a running Setup Assistant and Setup Assistant saved in macOS login-restoration
+state.
 
 Create and configure a raw base once:
 
@@ -60,26 +62,36 @@ script/tart_vm bootstrap \
   --name wrangle-tahoe-base
 ```
 
-After provisioning a disposable working VM and stopping it, preserve it under a new name:
+After provisioning a disposable working VM, preserve it under a new name while it is still running:
 
 ```bash
+script/tart_vm preflight --name wrangle-acceptance
 script/tart_vm snapshot \
   --name wrangle-acceptance \
-  --target wrangle-provisioned-base
+  --target wrangle-provisioned-base-v2
 ```
 
-Run the repeatable acceptance lifecycle from the stopped provisioned baseline:
+`snapshot` repeats the guest preflight, stops the source, and only then clones it. This ordering avoids
+preserving Setup Assistant that macOS would restore at the next login. A stopped source is refused
+because its guest state cannot be inspected.
+
+Run the repeatable acceptance lifecycle from the stopped provisioned baseline. Clone and reset now
+default to validated `wrangle-provisioned-base-v2`; the original `wrangle-provisioned-base` remains
+preserved and protected from reset replacement:
 
 ```bash
 script/tart_vm clone
 script/tart_vm start
+script/tart_vm preflight
 script/tart_vm status
 script/tart_vm stop
 script/tart_vm reset --replace
 ```
 
-`start` returns after Tart reports the VM running and writes Tart's process output to a private file
-under `~/.wrangle/tart/`. Add `--headless` for a non-GUI lane. Wrangle, its native helper, fixtures,
+`start` returns only after Tart reports the VM running and three consecutive guest preflight checks
+pass. A newly started VM that fails preflight is stopped before `start` returns an error. Tart's
+process output goes to a private file under `~/.wrangle/tart/`. Add `--headless` for a non-GUI lane.
+Wrangle, its native helper, fixtures,
 and the acceptance harness must execute inside the guest; host Accessibility APIs see only Tart's VM
 window. Tart launches its app bundle executable directly, so LaunchServices may omit its launch
 date; the native helper binds that host window to the kernel-reported process birth time instead.
@@ -90,9 +102,9 @@ remains free of API keys, Apple IDs, and authenticated sessions.
 The experimental guest backend makes both scopes explicit and refuses all mutations:
 
 ```bash
-wrangle windows --vm wrangle-acceptance --app "Setup Assistant"
-wrangle tart-observe --vm wrangle-acceptance --app "Setup Assistant" --json
-wrangle attach --vm wrangle-acceptance --app "Setup Assistant" --session guest
+wrangle windows --vm wrangle-acceptance --app Calculator
+wrangle tart-observe --vm wrangle-acceptance --app Calculator --json
+wrangle attach --vm wrangle-acceptance --app Calculator --session guest
 ```
 
 It verifies the exact VM is running and its kernel boot generation is unchanged before and after every
@@ -100,7 +112,16 @@ guest-helper request. A reboot, replacement, unavailable guest agent, ambiguous 
 changed guest process loses scope. The VM boot identity is also namespaced into the guest process
 identity so leases from different VMs cannot alias. Guest sessions are visibly marked read-only and
 execution returns `not_delivered/read_only` without invoking the helper. There is no fallback to the
-host Tart view or pixel coordinates. See [ADR 0004](../adr/0004-tart-guest-driver.md).
+host Tart view or pixel coordinates. A live Calculator trial on 2026-09-24 passed exact inventory,
+one-shot observation, session observe/inspect/preview, deterministic `not_delivered/read_only`
+execution refusal, unchanged-revision verification, close, and cleanup with zero delivered actions.
+The original protocol-1.1 guest helper refused directly launched Finder because it predated the
+kernel birth-time identity fix; that trial did not fall back or substitute the root. The repaired
+`wrangle-provisioned-base-v2` was subsequently upgraded to protocol 1.2. A randomized canary then
+passed two boots with one exact Finder window, stable kernel birth identity, persistent Accessibility
+trust, and complete read-only observations. The live acceptance VM was then explicitly reset from
+that baseline and passed one-shot and attached-session Finder acceptance plus a further reboot, with
+zero delivered actions. See [ADR 0004](../adr/0004-tart-guest-driver.md).
 
 ## Commands
 

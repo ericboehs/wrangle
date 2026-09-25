@@ -31,10 +31,10 @@ module Wrangle
 
     def self.default_suite_digest = suite_digest(load)
 
-    def self.run(provider, cases)
+    def self.run(provider, cases, endpoint: nil)
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       results = cases.map { |test_case| check(provider, test_case) }
-      {
+      report = {
         "schema" => REPORT_SCHEMA, "at" => Time.now.utc.iso8601,
         "provider" => provider.capabilities.provider, "model" => provider.capabilities.model,
         "runtime" => provider.capabilities.runtime, "transport" => provider.capabilities.transport,
@@ -44,6 +44,8 @@ module Wrangle
         "elapsed_ms" => ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000).round(1),
         "results" => results
       }
+      report["endpoint"] = endpoint if endpoint
+      report
     end
 
     def self.check(provider, test_case)

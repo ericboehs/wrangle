@@ -115,7 +115,7 @@ module Wrangle
       halted = task_preflight_result(proposal, pending, assessment, state)
       return halted if halted
 
-      task_receipt_result(proposal, pending, choice, assessment, state)
+      task_receipt_result(proposal, pending, assessment, state)
     end
 
     def escalate_partial_task_observation?
@@ -139,14 +139,14 @@ module Wrangle
       task_result(status, **state.slice(:remaining, :actions), assessment:, pending:) if status
     end
 
-    def task_receipt_result(proposal, pending, choice, assessment, state)
+    def task_receipt_result(proposal, pending, assessment, state)
       action_receipt = execute("proposal_id" => proposal.fetch("proposal_id"))
       state[:actions] << pending.merge(action_receipt.slice("dispatch", "effect", "reason", "terminal"))
       dispatch = action_receipt.fetch("dispatch")
       return task_result(dispatch, **state.slice(:remaining, :actions), assessment:) unless dispatch == "delivered"
 
       state[:remaining] -= 1
-      state[:history] << { "operation" => choice.operation, "effect" => action_receipt["effect"] }
+      state[:history] << task_history_entry(pending, action_receipt["effect"])
       return task_result("terminal", **state.slice(:remaining, :actions), assessment:) if action_receipt["terminal"]
 
       task_result("budget_exhausted", **state.slice(:remaining, :actions), assessment:) if
@@ -172,6 +172,13 @@ module Wrangle
       stored = @proposals.fetch(proposal.fetch("proposal_id"))
       stored["provider"] = { "name" => choice.provider, "model" => choice.model, "qualified" => qualified }
       proposal["policy"] = proposal.fetch("policy").merge("provider_qualified" => qualified)
+    end
+
+    def task_history_entry(action, effect)
+      entry = action.slice("operation", "role", "label")
+      label = entry["label"]
+      entry["label"] = label[0, DesktopObservation::VISIBLE_TEXT_CHARS] if label.is_a?(String)
+      entry.merge("effect" => effect)
     end
 
     def task_result(status, remaining:, actions:, assessment:, pending: nil)

@@ -12,10 +12,24 @@ module Wrangle
     REPORT_SCHEMA = "wrangle.tart-lifecycle.v1"
     DEFAULT_IMAGE = "ghcr.io/cirruslabs/macos-tahoe-base:latest"
     DEFAULT_BASE = "wrangle-tahoe-base"
-    DEFAULT_PROVISIONED = "wrangle-provisioned-base"
+    ORIGINAL_PROVISIONED = "wrangle-provisioned-base"
+    DEFAULT_PROVISIONED = "wrangle-provisioned-base-v2"
+    PI_PROVISIONED = "wrangle-pi-base"
+    PROTECTED_BASES = [DEFAULT_BASE, ORIGINAL_PROVISIONED, DEFAULT_PROVISIONED, PI_PROVISIONED].freeze
     DEFAULT_VM = "wrangle-acceptance"
     DEFAULT_LOG_ROOT = File.expand_path("~/.wrangle/tart")
     NAME = /\A[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}\z/
+    PREFLIGHT_CONFIRMATIONS = 3
+    PREFLIGHT_SCRIPT = <<~'SHELL'
+      state="$HOME/Library/Group Containers/group.com.apple.loginwindow.persistent-apps/persistantApps"
+      running=false
+      persisted=false
+      /usr/bin/pgrep -x "Setup Assistant" >/dev/null && running=true
+      if test -f "$state" && /usr/bin/grep -aFq com.apple.setupassistant "$state"; then
+        persisted=true
+      fi
+      printf '{"setup_assistant_running":%s,"setup_assistant_persisted":%s}\n' "$running" "$persisted"
+    SHELL
 
     class LifecycleError < StandardError; end
 
@@ -86,21 +100,38 @@ module Wrangle
         report("clone", safe_vm(find!(name)).merge("source_vm" => source))
       end
 
-      def snapshot(source: DEFAULT_VM, target: DEFAULT_PROVISIONED)
+      def preflight(name: DEFAULT_VM, timeout: 60)
+        validate_name!(name)
+        vm = find!(name)
+        raise LifecycleError, "Start #{name.inspect} before running its guest preflight" unless vm["Running"] == true
+
+        checks = wait_for_clean_preflight(name, timeout:)
+        report("preflight", safe_vm(find!(name)).merge("preflight" => checks))
+      end
+
+      def snapshot(source: DEFAULT_VM, target: DEFAULT_PROVISIONED, timeout: 60)
         validate_name!(source)
         validate_name!(target)
         source_vm = find!(source)
-        raise LifecycleError, "Stop #{source.inspect} before preserving it" if source_vm["Running"] == true
+        unless source_vm["Running"] == true
+          raise LifecycleError, "Start #{source.inspect} before preserving it so its guest preflight can run"
+        end
         raise LifecycleError, "VM #{target.inspect} already exists" if find(target)
 
+        checks = wait_for_clean_preflight(source, timeout:)
+        stop(name: source, timeout:)
         clone_with_settings(source, target, "--random-mac", "--random-serial")
-        report("snapshot", safe_vm(find!(target)).merge("source_vm" => source))
+        report("snapshot", safe_vm(find!(target)).merge("source_vm" => source,
+                                                        "source_preflight" => checks))
       end
 
       def start(name: DEFAULT_VM, headless: false, timeout: 60)
         validate_name!(name)
         vm = find!(name)
-        return report("start", safe_vm(vm).merge("changed" => false)) if vm["Running"] == true
+        if vm["Running"] == true
+          checks = wait_for_clean_preflight(name, timeout:)
+          return report("start", safe_vm(vm).merge("changed" => false, "preflight" => checks))
+        end
 
         log = File.join(@log_root, "#{name}.log")
         argv = [@tart, "run"]
@@ -112,8 +143,14 @@ module Wrangle
           raise LifecycleError, "Could not start Tart"
         end
         wait_for(name, timeout:, desired: true, pid:)
+        checks = begin
+          wait_for_clean_preflight(name, timeout:)
+        rescue LifecycleError
+          stop_after_failed_start(name, timeout:)
+          raise
+        end
         report("start", safe_vm(find!(name)).merge("changed" => true, "headless" => headless,
-                                                   "log" => log))
+                                                   "log" => log, "preflight" => checks))
       end
 
       def stop(name: DEFAULT_VM, timeout: 60)
@@ -131,9 +168,8 @@ module Wrangle
         validate_name!(source)
         validate_name!(name)
         raise LifecycleError, "Reset requires --replace" unless replace
-        if [DEFAULT_BASE, DEFAULT_PROVISIONED, source].include?(name)
-          raise LifecycleError, "Refusing to replace a protected base VM"
-        end
+        raise LifecycleError, "Refusing to replace a protected base VM" if
+          (PROTECTED_BASES + [source]).include?(name)
         raise LifecycleError, "Source VM #{source.inspect} is not available" unless find(source)
 
         stop(name:, timeout:) if find(name)&.fetch("Running", false)
@@ -193,6 +229,60 @@ module Wrangle
         end
       end
 
+      def wait_for_clean_preflight(name, timeout:)
+        deadline = @monotonic.call + positive_integer(timeout, "timeout")
+        confirmations = 0
+        loop do
+          vm = find(name)
+          unless vm && vm["Running"] == true
+            raise LifecycleError, "VM #{name.inspect} stopped before its guest preflight completed"
+          end
+
+          checks = guest_preflight(name)
+          if checks
+            enforce_clean_preflight!(name, checks)
+            confirmations += 1
+            return checks.merge("safe" => true) if confirmations >= PREFLIGHT_CONFIRMATIONS
+          else
+            confirmations = 0
+          end
+          raise LifecycleError, "Timed out waiting for #{name.inspect} guest preflight" if @monotonic.call >= deadline
+
+          @sleeper.call(1)
+        end
+      end
+
+      def guest_preflight(name)
+        result = @shell.call(@tart, "exec", name, "/bin/zsh", "-lc", PREFLIGHT_SCRIPT)
+        return unless result.success
+
+        parsed = JSON.parse(result.stdout)
+        keys = %w[setup_assistant_persisted setup_assistant_running]
+        valid = parsed.is_a?(Hash) && parsed.keys.sort == keys &&
+                keys.all? { |key| [true, false].include?(parsed[key]) }
+        raise LifecycleError, "Tart guest preflight returned invalid output" unless valid
+
+        parsed
+      rescue JSON::ParserError
+        raise LifecycleError, "Tart guest preflight returned invalid output"
+      end
+
+      def enforce_clean_preflight!(name, checks)
+        if checks["setup_assistant_running"]
+          raise LifecycleError, "VM #{name.inspect} preflight refused: Setup Assistant is running"
+        end
+        return unless checks["setup_assistant_persisted"]
+
+        raise LifecycleError,
+              "VM #{name.inspect} preflight refused: Setup Assistant is persisted for login restoration"
+      end
+
+      def stop_after_failed_start(name, timeout:)
+        stop(name:, timeout:)
+      rescue LifecycleError
+        raise LifecycleError, "VM #{name.inspect} failed guest preflight and could not be stopped"
+      end
+
       def validate_name!(name)
         raise LifecycleError, "Invalid Tart VM name" unless name.is_a?(String) && name.match?(NAME)
       end
@@ -250,7 +340,8 @@ module Wrangle
         }
         parser = OptionParser.new do |opts|
           opts.banner = "Usage: tart_vm COMMAND [options]"
-          opts.separator "Commands: status, bootstrap, clone, snapshot, start, stop, reset"
+          opts.separator "Commands: status, bootstrap, clone, preflight, snapshot, start, stop, reset"
+          opts.separator "Default provisioned source: #{DEFAULT_PROVISIONED}"
           opts.on("--name NAME", "working VM name") { |value| options[:name] = value }
           opts.on("--source NAME", "source VM or OCI image") { |value| options[:source] = value }
           opts.on("--target NAME", "snapshot target VM") { |value| options[:target] = value }
@@ -281,7 +372,9 @@ module Wrangle
                             name: options[:name] == DEFAULT_VM ? DEFAULT_BASE : options[:name],
                             cpu: options[:cpu], memory: options[:memory], display: options[:display])
         when "clone" then manager.clone(source: options[:source] || DEFAULT_PROVISIONED, name: options[:name])
-        when "snapshot" then manager.snapshot(source: options[:name], target: options[:target])
+        when "preflight" then manager.preflight(name: options[:name], timeout: options[:timeout])
+        when "snapshot"
+          manager.snapshot(source: options[:name], target: options[:target], timeout: options[:timeout])
         when "start" then manager.start(name: options[:name], headless: options[:headless], timeout: options[:timeout])
         when "stop" then manager.stop(name: options[:name], timeout: options[:timeout])
         when "reset"

@@ -4,10 +4,11 @@ require_relative "test_helper"
 
 class DesktopSessionServerTest < Minitest::Test
   class FakeProvider
-    attr_reader :capabilities
+    attr_reader :capabilities, :states
 
     def initialize(*choices, qualified: true)
       @choices = choices
+      @states = []
       @capabilities = Wrangle::DecisionProvider::Capabilities.new(
         protocol: Wrangle::DecisionProvider::PROTOCOL, max_choices: 16, confidence: true,
         hierarchical: true, mutation_qualified: qualified, provider: "fixture", model: "recorded-v1",
@@ -16,6 +17,7 @@ class DesktopSessionServerTest < Minitest::Test
     end
 
     def choose(state:, name:, criteria:, instructions:)
+      @states << state
       choice, confidence = @choices.shift
       raise "#{choice} was not offered for #{name}" unless criteria.key?(choice)
       raise "missing state or instructions" if state.empty? || instructions.empty?
@@ -225,7 +227,8 @@ class DesktopSessionServerTest < Minitest::Test
     before = @driver.state("one", "Open")
     after = @driver.state("two", "Close")
     @driver.observations = [before, before, after]
-    server = server_seam(provider: FakeProvider.new(["a1", 0.9], ["DONE", 0.95]))
+    provider = FakeProvider.new(["a1", 0.9], ["DONE", 0.95])
+    server = server_seam(provider:)
 
     result = server.send(:autonomous_task, "goal" => "Open the fixture", "steps" => 3)
 
@@ -238,6 +241,8 @@ class DesktopSessionServerTest < Minitest::Test
     assert_equal "PRESS", @registry.dispatch_started[:operation]
     refute_nil @registry.dispatch_finished
     assert @log.events.find { |event| event["event"] == "execute" }["durable"]
+    assert_equal({ "operation" => "PRESS", "role" => "button", "label" => "Open",
+                   "effect" => "verified" }, provider.states.last.dig("recent_actions", 0))
     refute_includes JSON.generate(result), "proposal_id"
     refute_includes JSON.generate(result), "@s:e1"
   end

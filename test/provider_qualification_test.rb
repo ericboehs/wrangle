@@ -22,9 +22,11 @@ class ProviderQualificationTest < Minitest::Test
 
   def test_recorded_suite_qualifies_exact_choice_behavior
     cases = Wrangle::ProviderQualification.load(FIXTURE)
-    report = Wrangle::ProviderQualification.run(provider(cases), cases)
+    endpoint = "http://127.0.0.1:1234/v1/systemone"
+    report = Wrangle::ProviderQualification.run(provider(cases), cases, endpoint:)
 
     assert report["qualified"]
+    assert_equal endpoint, report["endpoint"]
     assert_equal 8, report["passed"]
     assert_equal 64, report["suite_sha256"].length
     assert_operator report["elapsed_ms"], :>=, 0

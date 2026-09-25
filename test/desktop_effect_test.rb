@@ -36,6 +36,27 @@ class DesktopEffectTest < Minitest::Test
                                       observation("one", target.merge("states" => %w[enabled selected])))
   end
 
+  def test_calculator_digit_press_verifies_an_exact_display_transition
+    target = candidate("2", target_key: "native:0:button")
+    before = calculator_observation("one", "0", target)
+
+    assert_equal "verified", verify(proposal(before, "PRESS"), before,
+                                    calculator_observation("two", "2", target))
+    assert_equal "verified", verify(proposal(before, "PRESS"),
+                                    calculator_observation("one", "12", target),
+                                    calculator_observation("two", "122", target))
+    assert_equal "unchanged", verify(proposal(before, "PRESS"), before,
+                                     calculator_observation("two", "3", target))
+    assert_equal "unverified", verify(proposal(before, "PRESS"), before,
+                                      calculator_observation("one", "2", target))
+    assert_equal "unchanged", verify(proposal(before, "PRESS"), before,
+                                     calculator_observation("two", "2", target, complete: false))
+    assert_equal "unchanged", verify(proposal(before, "PRESS"), before,
+                                     calculator_observation("two", "2", target, extra_display: "9"))
+    assert_equal "unchanged", verify(proposal(before, "PRESS"), before,
+                                     calculator_observation("two", "2", target, app: "Other"))
+  end
+
   def test_press_disappearance_requires_complete_changed_observation
     target = candidate("Open")
     before = observation("one", target)
@@ -214,5 +235,21 @@ class DesktopEffectTest < Minitest::Test
       "coverage" => { "truncated" => !complete }, "candidates" => candidates,
       "tree" => tree
     }.compact
+  end
+
+  def calculator_observation(revision, display, target, complete: true, extra_display: nil, app: "Calculator")
+    displays = [display, extra_display].compact.map do |value|
+      { "role" => "statictext", "name" => value, "value" => value, "states" => ["enabled"],
+        "operations" => [], "children" => [] }
+    end
+    button = {
+      "role" => target["role"], "name" => target["label"], "value" => target["value"],
+      "states" => target["states"], "operations" => target["operations"],
+      "target_key" => target["target_key"], "children" => []
+    }.compact
+    tree = { "role" => "window", "name" => "Calculator", "children" => displays + [button] }
+    observation(revision, target, complete:, tree:).merge(
+      "scope" => { "id" => "calculator-scope", "app" => app }
+    )
   end
 end

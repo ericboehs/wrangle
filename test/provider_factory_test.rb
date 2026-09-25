@@ -42,6 +42,65 @@ class ProviderFactoryTest < Minitest::Test
     ENV["JEV_API_KEY"] = previous
   end
 
+  def test_qualification_endpoint_uses_exact_jev_configuration
+    previous = ENV.fetch("JEV_ENDPOINT", nil)
+    ENV.delete("JEV_ENDPOINT")
+    assert_nil Wrangle::ProviderFactory.qualification_endpoint("provider" => "replay")
+    assert_equal Wrangle::Jev::DEFAULT_ENDPOINT,
+                 Wrangle::ProviderFactory.qualification_endpoint("provider" => "jev")
+
+    ENV["JEV_ENDPOINT"] = "http://127.0.0.1:1234/from-env"
+    assert_equal "http://127.0.0.1:1234/from-env",
+                 Wrangle::ProviderFactory.qualification_endpoint("provider" => "jev")
+    assert_equal "http://127.0.0.1:4321/explicit",
+                 Wrangle::ProviderFactory.qualification_endpoint(
+                   "provider" => "jev", "provider_endpoint" => "http://127.0.0.1:4321/explicit"
+                 )
+    assert_raises(Wrangle::ConfigurationError) do
+      Wrangle::ProviderFactory.qualification_endpoint(
+        "provider" => "jev", "provider_endpoint" => "not a valid endpoint"
+      )
+    end
+  ensure
+    ENV["JEV_ENDPOINT"] = previous
+  end
+
+  def test_jev_qualification_receipt_is_bound_to_the_exact_endpoint
+    previous = ENV.fetch("JEV_API_KEY", nil)
+    ENV["JEV_API_KEY"] = "test-only"
+    receipt = File.join(@directory, "jev-qualification.json")
+    endpoint = "http://127.0.0.1:1234/v1/systemone"
+    report = {
+      "schema" => Wrangle::ProviderQualification::REPORT_SCHEMA, "qualified" => true,
+      "at" => Time.now.utc.iso8601, "protocol" => Wrangle::DecisionProvider::PROTOCOL,
+      "provider" => "jev", "model" => "fixture-model", "endpoint" => endpoint,
+      "suite_sha256" => Wrangle::ProviderQualification.default_suite_digest
+    }
+    File.write(receipt, JSON.generate(report))
+
+    assert Wrangle::ProviderFactory.build(
+      "provider" => "jev", "provider_model" => "fixture-model", "provider_endpoint" => endpoint,
+      "provider_qualification" => receipt
+    ).mutation_qualified?
+
+    mismatched = Wrangle::ProviderFactory.build(
+      "provider" => "jev", "provider_model" => "fixture-model",
+      "provider_endpoint" => "http://127.0.0.1:4321/v1/systemone",
+      "provider_qualification" => receipt
+    )
+    refute mismatched.mutation_qualified?
+
+    report.delete("endpoint")
+    File.write(receipt, JSON.generate(report))
+    missing = Wrangle::ProviderFactory.build(
+      "provider" => "jev", "provider_model" => "fixture-model", "provider_endpoint" => endpoint,
+      "provider_qualification" => receipt
+    )
+    refute missing.mutation_qualified?
+  ensure
+    ENV["JEV_API_KEY"] = previous
+  end
+
   def test_jev_provider_records_the_default_model_when_optional_configuration_is_absent
     previous = ENV.fetch("JEV_API_KEY", nil)
     ENV["JEV_API_KEY"] = "test-only"

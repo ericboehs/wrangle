@@ -3,10 +3,11 @@
 [![CI](https://github.com/ericboehs/wrangle/actions/workflows/ci.yml/badge.svg)](https://github.com/ericboehs/wrangle/actions/workflows/ci.yml)
 [![Gem Version](https://badge.fury.io/rb/wrangle.svg)](https://rubygems.org/gems/wrangle)
 
-**Hand one Safari window to a program, and no more than that.**
+**Scoped computer use for macOS — hand one Safari window or one app window to a program, and no more than that.**
 
-Wrangle drives an ordinary Safari window through Apple Events. There is no automation session, no
-extension, and no native helper — so the window stays a real one you can see, keep, and take back at
+Wrangle drives an ordinary Safari window through Apple Events, or one exact macOS application window
+through a shipped native helper over the accessibility stack. Either way there is no session beyond
+the window you hand over — so the window stays a real one you can see, keep, and take back at
 any moment. It is pure Ruby with **no runtime dependencies**: everything it needs ships with Ruby and
 macOS.
 
@@ -15,10 +16,11 @@ with a banner across the top, none of your cookies, and none of your sessions. T
 for testing a site. It is the wrong tool for doing something *in* a browser you are already logged
 into. Wrangle is for the second case.
 
-> **Release status:** 0.1 is the stable Safari engine described below. The unreleased macOS alpha on
-> `feature/macos-pi-alpha` adds scoped AX computer use, provider qualification, and a project-local Pi
-> tool. Its controlled Finder/Settings/Slack gate passes on the alpha host through the exact-window
-> native driver; see
+> **Release status:** 0.1 is the stable Safari engine described below. `main` now also carries the
+> macOS desktop engine: scoped AX computer use (`wrangle task`, `attach`, `preview`, `execute`),
+> provider qualification (`wrangle qualify`), and a project-local Pi tool
+> (`.pi/extensions/computer.ts`). Its controlled Finder/Settings/Slack gate passes on the alpha host
+> through the exact-window native driver; see
 > [`docs/evaluations/macos-alpha-acceptance-2026-09-19.md`](docs/evaluations/macos-alpha-acceptance-2026-09-19.md).
 
 ```ruby

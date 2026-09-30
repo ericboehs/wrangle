@@ -30,7 +30,7 @@ require_relative "wrangle/session_server"
 require_relative "wrangle/desktop_session_server"
 require_relative "wrangle/desktop_task"
 
-# Hand one Safari window to a program, and no more than that.
+# Scoped computer use for macOS: one Safari window or one app window, and no more than that.
 #
 # Wrangle drives an ordinary Safari window through Apple Events. There is no automation session and
 # no extension, so the window stays a real one the user can see, keep, and take back at any moment.

@@ -9,7 +9,7 @@ require_relative "desktop_observation"
 module Wrangle
   # Goal-driven preview and bounded continuation mixed into the persistent desktop session.
   # The proposal, receipt, and lifecycle paths stay together so authorization cannot drift.
-  # rubocop:disable-next Metrics/ModuleLength
+  # rubocop:disable Metrics/ModuleLength
   module DesktopSessionAutonomy
     DEFAULT_BUDGET = 8
     MAX_BUDGET = 40
@@ -341,4 +341,5 @@ module Wrangle
       }.compact
     end
   end
+  # rubocop:enable Metrics/ModuleLength
 end

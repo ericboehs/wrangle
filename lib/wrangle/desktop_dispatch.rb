@@ -20,6 +20,15 @@ module Wrangle
         %w[not_delivered refused].include?(delivery["dispatch"])
 
       finish_observed_delivery(proposal, fresh, dispatch, delivery)
+    rescue DriverRefusal => e
+      # `dispatch` is always assigned here: the only earlier statement that can raise
+      # DriverRefusal is the execute call itself, which runs after the durable marker exists.
+      # A pre-delivery refusal (e.g. a stale native ref) means nothing was delivered, so finish
+      # the marker instead of bricking the scope, and report without poisoning the session.
+      raise unless e.delivery == "not_delivered"
+
+      @registry.finish_dispatch(dispatch)
+      receipt(proposal, "not_delivered", "not_applicable", e.code, durable: true)
     rescue DeliveryUnknown => e
       @poisoned ||= e
       raise

@@ -839,6 +839,29 @@ class DesktopSessionServerTest < Minitest::Test
     assert_match(/consumed/, consumed["error"])
   end
 
+  def test_predelivery_driver_refusal_finishes_the_dispatch_marker_without_poisoning
+    before = @driver.state("one", "Open")
+    @driver.observations = [before, before]
+    @driver.execute_failure = Wrangle::DriverRefusal.new(
+      "STALE_REF", "Native AX action ref is stale", delivery: "not_delivered"
+    )
+    server = server_seam
+    server.send(:dispatch, "op" => "observe")
+    proposal = server.send(:dispatch, "op" => "preview", "ref" => 1).fetch("value")
+
+    receipt = server.send(:dispatch, "op" => "execute",
+                                     "proposal_id" => proposal["proposal_id"]).fetch("value")
+
+    assert_equal "not_delivered", receipt["dispatch"]
+    assert_equal "not_applicable", receipt["effect"]
+    assert_equal "STALE_REF", receipt["reason"]
+    refute receipt["terminal"]
+    assert @registry.dispatch_started
+    assert_equal "dispatch-token", @registry.dispatch_finished.token
+    refute server.send(:dispatch, "op" => "status").dig("value", "poisoned")
+    assert server.send(:dispatch, "op" => "observe")["ok"]
+  end
+
   def test_unrelated_revision_change_does_not_verify_a_press_effect
     before = @driver.state("one", "Open")
     unrelated = @driver.state("two", "Open")

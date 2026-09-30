@@ -552,7 +552,7 @@ module Wrangle
       end
 
       # OptionParser necessarily assigns every supported option into one shared result hash.
-      # rubocop:disable Metrics/AbcSize
+      # rubocop:disable-next Metrics/AbcSize
       def self.parse(argv, out)
         options = { matrix: DEFAULT_MATRIX, runs: 1, prepare: false, task: false, allow_actions: false,
                     list: false, quiet: false }
@@ -581,7 +581,6 @@ module Wrangle
         parser.parse!(argv)
         options
       end
-      # rubocop:enable Metrics/AbcSize
       private_class_method :parse
 
       def self.list(matrix, out)

@@ -71,7 +71,7 @@ module Wrangle
 
     def inventory
       parsed = JSON.parse(run(@tart, "list", "--format", "json"))
-      valid = parsed.is_a?(Array) && parsed.all? { |record| record.is_a?(Hash) }
+      valid = parsed.is_a?(Array) && parsed.all?(Hash)
       raise DriverError, "Tart returned an invalid VM inventory" unless valid
 
       parsed
@@ -110,7 +110,7 @@ module Wrangle
       validate_app!(app)
       guarded do
         windows = @helper.windows(app:, titles:)
-        unless windows.is_a?(Array) && windows.all? { |window| window.is_a?(Hash) }
+        unless windows.is_a?(Array) && windows.all?(Hash)
           raise DriverError, "The guest helper returned an invalid window inventory"
         end
 

@@ -42,7 +42,7 @@ module Wrangle
 
       def action_ambiguities(candidates)
         entries = action_entries(candidates)
-        counts = entries.each_with_object(Hash.new(0)) { |entry, tally| tally[entry] += 1 }
+        counts = entries.tally
         seen = {}
         entries.filter_map do |descriptor|
           next unless counts[descriptor] > 1

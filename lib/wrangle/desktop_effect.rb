@@ -59,7 +59,7 @@ module Wrangle
         until stack.empty?
           node = stack.pop
           elements << normalize_tree_node(node)
-          stack.concat(Array(node["children"]).select { |child| child.is_a?(Hash) })
+          stack.concat(Array(node["children"]).grep(Hash))
         end
         elements
       end

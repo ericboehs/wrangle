@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.2.0] - 2026-09-30
+
+- Native macOS desktop engine: `wrangle task --app APP --goal GOAL` runs a bounded
+  observe → decide → preview → execute → verify loop in one exact application window (Jev by
+  default, at most 8 actions), and `attach`/`observe`/`drill`/`preview`/`execute`/`continue`
+  drive the same loop interactively through a persistent session server.
+- One exact window, never more: the CoreGraphics window and process birth-time identity are
+  re-verified before every snapshot and dispatch. A replaced process, moved window, or ambiguous
+  target fails closed instead of acting. Policy denies credential handoffs and window-control
+  actions outright; consequential actions need a separate `--approve` approval.
+- At-most-once dispatch: a durable marker crosses the dispatch gap, so an interrupted action is
+  reported `delivery_unknown` and never retried. Target-specific effect verification reports
+  `verified`, `unchanged`, or `unverified` instead of trusting that the screen changed.
+- `wrangle qualify --provider NAME` runs the recorded conformance suite and emits an owner-only
+  receipt; only a qualified provider may dispatch, and replay providers are bound to their trace
+  digest. Qualification expires after 7 days.
+- Read-only Tart guest driver: `windows --vm VM --app APP` and `tart-observe` inspect one guest
+  application window, bound to the VM's boot generation, with no mutation path.
+- Project-local Pi tool (`.pi/extensions/computer.ts`): a single-call `computer` tool that owns
+  the whole loop and releases the window automatically.
+- Fixed a dispatch-marker leak where a pre-delivery driver refusal bricked the scope with a
+  phantom unresolved dispatch; it now finishes the marker and reports `not_delivered` without
+  poisoning the session.
+
 ## [0.1.0] - 2026-09-18
 
 - `wrangle run --goal "..." --execute`: a decision loop driven by Jev, a typed-choice model that

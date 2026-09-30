@@ -3,7 +3,10 @@
 require "test_helper"
 
 class JxaBridgeTest < Minitest::Test
+  parallelize_me!
   include BridgeHelpers
+
+  def bridge(**config) = super(reusable: false, **config)
 
   def test_start_pings_then_installs_both_scripts_once
     active = bridge

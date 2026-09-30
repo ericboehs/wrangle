@@ -5,6 +5,7 @@ require "securerandom"
 require_relative "errors"
 require_relative "jxa_bridge"
 require_relative "observation"
+require_relative "timing"
 
 module Wrangle
   # One scoped Safari window, observed with snapshot.js and mutated only through guarded DOM actions.
@@ -88,8 +89,9 @@ module Wrangle
     end
 
     def initialize(url: nil, window_id: nil, display: nil, bounds: nil, bridge: nil,
-                   load_timeout: 15, restore_focus: true, allow_multiple_safari: false)
+                   load_timeout: 15, restore_focus: true, allow_multiple_safari: false, timing: Timing)
       @attaching = !window_id.nil?
+      @timing = timing
       validate!(url, window_id, display, bounds)
 
       @bridge = bridge || JxaBridge.new
@@ -138,7 +140,7 @@ module Wrangle
         break if result["status"] == "ok"
         raise StalePage, "The scoped Safari page did not settle" if now > deadline
 
-        sleep 0.05
+        pause(0.05)
       end
 
       state = result["state"]
@@ -214,7 +216,7 @@ module Wrangle
       refuse_stale(page, observed)
 
       if kind == "wait"
-        sleep 0.1
+        pause(0.1)
         return { "executed" => observed["id"] }
       end
 
@@ -256,7 +258,8 @@ module Wrangle
 
     private
 
-    def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    def now = @timing.now
+    def pause(seconds) = @timing.sleep(seconds)
 
     def validate!(url, window_id, display, bounds)
       if @attaching && !window_id.is_a?(Integer)

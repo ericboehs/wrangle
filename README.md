@@ -15,6 +15,12 @@ with a banner across the top, none of your cookies, and none of your sessions. T
 for testing a site. It is the wrong tool for doing something *in* a browser you are already logged
 into. Wrangle is for the second case.
 
+> **Release status:** 0.1 is the stable Safari engine described below. The unreleased macOS alpha on
+> `feature/macos-pi-alpha` adds scoped AX computer use, provider qualification, and a project-local Pi
+> tool. Its controlled Finder/Settings/Slack gate passes on the alpha host through the exact-window
+> native driver; see
+> [`docs/evaluations/macos-alpha-acceptance-2026-09-19.md`](docs/evaluations/macos-alpha-acceptance-2026-09-19.md).
+
 ```ruby
 require "wrangle"
 
@@ -162,6 +168,83 @@ the only optimisation that matters is sending fewer of them. A read costs two ev
 one evaluation) and a mutation costs four. The page scripts are shipped once at startup instead of
 ~12 KB per call, unresolved specifiers are addressed rather than resolved, and nothing reads window
 bounds on the hot path.
+
+## Scoped macOS alpha
+
+The alpha keeps the same observe → propose → execute boundary for one exact application window. A
+shipped Swift helper owns window/process/display discovery, Electron accessibility setup, bounded AX
+observation, and native dispatch. There is no `agent-desktop` runtime prerequisite. Native refs remain
+bound to one snapshot and scope, actions revalidate the exact process/window/AX target, and delivery
+is still verified independently afterward. A locked login session is reported as unavailable rather
+than treated as an empty or broken AX tree.
+
+The primary interface is one natural task. Wrangle selects the only or uniquely focused app window,
+runs at most eight typed decision/action cycles internally, verifies every delivered action, releases
+its lease automatically, and leaves the application window open:
+
+```bash
+wrangle doctor
+wrangle task --app Finder --goal "Open Search in the disposable Finder window"
+```
+
+`windows`, `attach`, `observe`, `drill`, `preview`, `execute`, and `close` remain debug and conformance
+interfaces; an outer agent does not orchestrate them during a normal task.
+
+Desktop tasks use Jev when neither `--provider` nor `WRANGLE_DESKTOP_PROVIDER` is set. An explicitly
+configured provider overrides that default, and Wrangle never falls back between providers. No provider is
+mutation-qualified merely because its API is compatible. Qualification receipts are bound to the canonical
+suite and provider/model, to the exact configured endpoint for Jev, and to the exact trace digest for replay;
+they expire after seven days:
+
+```bash
+wrangle qualify --provider replay --provider-trace trace.jsonl --output qualification.json
+wrangle task --app Finder --goal "Open the fixture" --provider replay \
+  --provider-trace trace.jsonl --provider-qualification qualification.json
+```
+
+A task invocation authorizes only its necessary reversible actions. Internally each action still uses
+a revision-bound one-shot proposal. Consequential actions stop before delivery, and uncertain delivery
+terminates the task without retry. Text must be an exact quoted goal span or named literal;
+credentials are always a handoff. If multiple AX targets expose the same visible role, label, value,
+states, and operation, Wrangle omits that operation from every match rather than resolving the tie
+with an opaque ref, path, or list position.
+
+In a source checkout, the stdlib-only
+[macOS acceptance harness](docs/evaluations/macos-app-compatibility.md) probes exact windows without
+retaining UI content. `script/macos_accept finder --runs 5` checks one profile;
+`script/macos_matrix --tier core --runs 5` checks a compatibility wave. App preparation and bounded
+provider tasks are separate opt-in flags, and the checked-in task profiles permit zero delivered
+actions. `script/tart_vm` creates, preflights, snapshots, starts, stops, and explicitly resets
+disposable Tart acceptance VMs; clone/snapshot refuse replacement and reset requires `--replace`.
+Clone and reset default to the validated `wrangle-provisioned-base-v2`; it, the original
+`wrangle-provisioned-base`, and the Pi-enabled `wrangle-pi-base` are protected from reset replacement.
+The guest preflight rejects a
+running or login-restored Setup Assistant. `start` must pass that check
+before returning a fixture as ready, and `snapshot` preflights and stops its running source before
+preserving it. The experimental read-only guest backend requires both scopes explicitly:
+
+```bash
+wrangle tart-observe --vm wrangle-acceptance --app Finder
+wrangle attach --vm wrangle-acceptance --app Finder --session guest
+```
+
+It verifies the VM boot generation around every guest-helper request and has no mutation or host-pixel
+fallback. Guest sessions expose observe/drill/inspect, identify themselves as read-only, and return a
+`not_delivered/read_only` receipt for every execution attempt. See
+[ADR 0004](docs/adr/0004-tart-guest-driver.md).
+
+Pi discovers [`.pi/extensions/computer.ts`](.pi/extensions/computer.ts) in this checkout. Users can
+ask naturally:
+
+> Check the #notifications channel in Boehs Slack.
+
+The agent calls `computer` once with only the natural goal and application name. Wrangle performs
+window selection, progressive observation, typed decisions, proposals, dispatch, verification, and
+cleanup internally; users and the outer agent never handle window IDs, refs, proposal IDs, revisions,
+or receipt vocabulary. Consequential actions stop before delivery; this first protocol reports the
+pending action but cannot yet resume its bound approval. Every result releases Wrangle's exclusive
+lease and deliberately leaves the user-owned app window open. Policy remains in Wrangle rather than
+the extension.
 
 ## CLI
 
@@ -459,6 +542,12 @@ property of the transport, not of a stub.
 ```
 COVERAGE=1 rake test                      # per-file lines and branches
 COVERAGE=1 COVERAGE_DETAIL=1 rake test    # and which ones are missing
+script/macos_accept --list                # macOS compatibility profiles, no app access
+script/macos_accept finder --runs 5       # read-only exact-window probes
+script/tart_vm status                     # sanitized disposable-VM lifecycle state
+script/tart_vm preflight                  # reject active/persisted Setup Assistant state
+wrangle tart-observe --vm VM --app APP    # exact read-only guest application observation
+wrangle attach --vm VM --app APP          # read-only guest observe/drill/inspect session
 ```
 
 Coverage is measured with Ruby's own `Coverage` module rather than a gem: adding a dependency to

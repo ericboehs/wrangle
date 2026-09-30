@@ -7,6 +7,7 @@ require_relative "fixtures/scripted_jev"
 # when it may keep going: does a plan advance only on a finished leg, does churn get charged to the
 # budget, and is a low-confidence stop trusted. Every bug these cover was first seen on a live page.
 class RunLoopTest < Minitest::Test
+  parallelize_me!
   include BridgeHelpers
 
   FILL = "Destination"
@@ -18,16 +19,18 @@ class RunLoopTest < Minitest::Test
   end
 
   def teardown
-    @thread&.kill
+    thread = @thread
     @thread = nil
+    thread&.kill
+    thread&.join(1)
     super
   end
 
   def serving(turns, stale_acts: 0, thinks_for: 0, **config)
-    @jev = ScriptedJev.new(turns, thinks_for: thinks_for)
+    @jev = ScriptedJev.new(turns, thinks_for:, sleeper: @clock.method(:sleep))
     session = dedicated(**config)
-    session = FlakySession.new(session, stale_acts: stale_acts) if stale_acts.positive?
-    server = Wrangle::SessionServer.new(@socket, {}, session: session, jev: @jev)
+    session = FlakySession.new(session, stale_acts:) if stale_acts.positive?
+    server = Wrangle::SessionServer.new(@socket, {}, session:, jev: @jev, timing: @clock)
     @thread = Thread.new { server.run }
     @thread.abort_on_exception = false
     client = Wrangle::SessionClient.new(@socket)

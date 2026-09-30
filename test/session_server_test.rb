@@ -6,6 +6,7 @@ require_relative "fixtures/scripted_jev"
 # The interactive layer exists so an agent can notice it was wrong and course-correct. These tests
 # are about that: does a reply say what changed, and does a refusal say what to do about itself.
 class SessionServerTest < Minitest::Test
+  parallelize_me!
   include BridgeHelpers
 
   def setup
@@ -18,9 +19,11 @@ class SessionServerTest < Minitest::Test
     super
   end
 
+  def timing = { timing: @clock }
+
   def serving(**config)
     session = dedicated(**config)
-    server = Wrangle::SessionServer.new(@socket, {}, session: session)
+    server = Wrangle::SessionServer.new(@socket, {}, session:, **timing)
     @thread = Thread.new { server.run }
     @thread.abort_on_exception = false
     client = Wrangle::SessionClient.new(@socket)
@@ -29,15 +32,19 @@ class SessionServerTest < Minitest::Test
   end
 
   def stop_server
-    @thread&.kill
+    thread = @thread
     @thread = nil
+    thread&.kill
+    thread&.join(1)
   end
 
   # The seam the run loop drives, without the socket in the way. `decide` watches the page while Jev
   # thinks and keeps the read; `observe!` may promote it, but only while it still describes the page.
-  def seam(turns, thinks_for: 0.2, **config)
-    Wrangle::SessionServer.new(@socket, {}, session: dedicated(**config),
-                                            jev: ScriptedJev.new(turns, thinks_for: thinks_for))
+  def seam(turns, thinks_for: 0.2, think_sleeper: @clock.method(:sleep), **config)
+    Wrangle::SessionServer.new(
+      @socket, {}, session: dedicated(**config),
+                   jev: ScriptedJev.new(turns, thinks_for:, sleeper: think_sleeper), **timing
+    )
   end
 
   def reads = page_ops.count { _1["op"] == "observe" }
@@ -123,9 +130,9 @@ class SessionServerTest < Minitest::Test
   end
 
   def timed
-    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    started = @clock.now
     yield
-    Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+    @clock.now - started
   end
 
   def test_scrolling_reports_how_far_the_page_moved
@@ -231,8 +238,8 @@ class SessionServerTest < Minitest::Test
   # last step" has to cope with there being no last step, and a run refusing to start is the ordinary
   # way that happens — `--steps 0` is a reasonable thing for a caller to pass.
   def test_a_run_with_no_budget_summarises_cleanly_instead_of_failing
-    jev = ScriptedJev.new([])
-    server = Wrangle::SessionServer.new(@socket, {}, session: dedicated, jev: jev)
+    jev = ScriptedJev.new([], sleeper: @clock.method(:sleep))
+    server = Wrangle::SessionServer.new(@socket, {}, session: dedicated, jev:, **timing)
     @thread = Thread.new { server.run }
     sleep 0.02 until File.socket?(@socket)
     client = Wrangle::SessionClient.new(@socket)
@@ -268,10 +275,10 @@ class SessionServerTest < Minitest::Test
   # from a page that has held still. A page that has not held still is read again for as long as the
   # answer takes — which is the only case where the second read is worth the Apple Events.
   def test_a_page_that_keeps_moving_is_read_again_for_as_long_as_the_answer_takes
-    # A full second of thinking against a 50ms poll. The margin is deliberate: each read is a
-    # subprocess round-trip, and on a slow machine a tighter budget measures the runner, not the loop.
+    # Keep one real concurrent wait here: accelerated deadline tests should not turn the watcher into
+    # a scheduling assertion. The margin lets several bridge reads finish even under a loaded runner.
     server = seam([{ operation: "CLICK", target: "Find stays", confidence: 0.9 }],
-                  thinks_for: 1.0, drifts: 500)
+                  thinks_for: 0.5, think_sleeper: Kernel.method(:sleep), drifts: 500)
     server.observe!
 
     before = reads
@@ -284,10 +291,11 @@ class SessionServerTest < Minitest::Test
   # decision, and the socket is the path a caller stepping through a page by hand actually takes.
   def test_a_decision_can_be_asked_for_over_the_socket
     session = dedicated
-    server = Wrangle::SessionServer.new(@socket, {}, session: session,
-                                                     jev: ScriptedJev.new([{ operation: "CLICK",
-                                                                             target: "Find stays",
-                                                                             confidence: 0.9 }]))
+    server = Wrangle::SessionServer.new(
+      @socket, {}, session:,
+                   jev: ScriptedJev.new([{ operation: "CLICK", target: "Find stays", confidence: 0.9 }],
+                                        sleeper: @clock.method(:sleep)), **timing
+    )
     @thread = Thread.new { server.run }
     sleep 0.02 until File.socket?(@socket)
     client = Wrangle::SessionClient.new(@socket)
@@ -386,7 +394,7 @@ class SessionServerTest < Minitest::Test
   def test_a_bug_in_the_server_is_reported_instead_of_hanging_the_caller
     session = dedicated
     session.define_singleton_method(:observe) { raise NoMethodError, "undefined method 'fetch' for nil" }
-    server = Wrangle::SessionServer.new(@socket, {}, session: session)
+    server = Wrangle::SessionServer.new(@socket, {}, session:, **timing)
     @thread = Thread.new { server.run }
     sleep 0.02 until File.socket?(@socket)
 
@@ -412,7 +420,7 @@ class SessionServerTest < Minitest::Test
 
   def test_the_backend_is_reported_as_the_one_that_was_asked_for
     session = dedicated
-    server = Wrangle::SessionServer.new(@socket, { "backend" => "mcp" }, session: session)
+    server = Wrangle::SessionServer.new(@socket, { "backend" => "mcp" }, session:, **timing)
     @thread = Thread.new { server.run }
     sleep 0.02 until File.socket?(@socket)
 

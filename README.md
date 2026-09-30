@@ -16,11 +16,11 @@ with a banner across the top, none of your cookies, and none of your sessions. T
 for testing a site. It is the wrong tool for doing something *in* a browser you are already logged
 into. Wrangle is for the second case.
 
-> **Release status:** 0.1 is the stable Safari engine described below. `main` now also carries the
-> macOS desktop engine: scoped AX computer use (`wrangle task`, `attach`, `preview`, `execute`),
-> provider qualification (`wrangle qualify`), and a project-local Pi tool
-> (`.pi/extensions/computer.ts`). Its controlled Finder/Settings/Slack gate passes on the alpha host
-> through the exact-window native driver; see
+> **Release status:** 0.2.0 includes the stable Safari engine described below and the macOS desktop
+> alpha: scoped AX computer use (`wrangle task`, `attach`, `preview`, `execute`) and provider
+> qualification (`wrangle qualify`). The Pi tool (`.pi/extensions/computer.ts`) is project-local
+> to a source checkout, not part of the gem. The controlled Finder/Settings/Slack gate passes on
+> the alpha host through the exact-window native driver; see
 > [`docs/evaluations/macos-alpha-acceptance-2026-09-19.md`](docs/evaluations/macos-alpha-acceptance-2026-09-19.md).
 
 ```ruby
@@ -37,17 +37,28 @@ end
 
 ## Install
 
-```ruby
-gem "wrangle"
+Requires macOS and Ruby 3.2+. Install the 0.2.0 gem for both the stable Safari engine and the
+macOS desktop alpha:
+
+```bash
+gem install wrangle -v 0.2.0
+wrangle --version # 0.2.0
 ```
 
-Requires macOS, Safari, and Ruby 3.2+. You also need two things switched on once, by hand:
+Or add `gem "wrangle", "~> 0.2.0"` to your Gemfile. The paths below have different setup:
 
-- **Safari → Settings → Advanced → Allow JavaScript from Apple Events.**
-- The first run raises an Apple Events permission prompt. Approve it, or find it later under
-  **System Settings → Privacy & Security → Automation**.
+**Stable Safari path:** Requires Safari. Enable **Safari → Settings → Advanced → Allow JavaScript
+from Apple Events**. Approve the first Apple Events permission prompt (or enable your terminal under
+**System Settings → Privacy & Security → Automation**). Wrangle will not change either setting for
+you. The Safari examples below use this path; it does not require desktop Accessibility permission.
 
-Wrangle will not change either setting for you.
+**macOS desktop alpha:** The gem ships a Swift helper for one exact app window. You need Swift
+available at `/usr/bin/swift`, and must grant your terminal **Accessibility** permission under
+**System Settings → Privacy & Security → Accessibility**. Run `wrangle doctor` to check readiness.
+Goal-driven `wrangle task` uses Jev by default and needs `JEV_API_KEY` (or `TYPESAFE_API_KEY`). A
+provider must pass `wrangle qualify` and supply its qualification receipt before it can mutate an
+app; without that, it can assess but not act. See [Scoped macOS alpha](#scoped-macos-alpha) for the
+CLI workflow and safety limits. The Pi `computer` tool is available only in a source checkout.
 
 ## Two ways in
 

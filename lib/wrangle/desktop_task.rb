@@ -24,7 +24,7 @@ module Wrangle
     end
 
     def run(app:, goal:, literals: {}, steps: DEFAULT_STEPS, min_confidence: 0.5,
-            concurrency: "exclusive", provider_options: {})
+            concurrency: "exclusive", provider_options: {}, teach: false, no_skill: false)
       app = app.to_s.strip
       goal = goal.to_s.strip
       raise ArgumentError, "A macOS application name is required" if app.empty?
@@ -45,7 +45,7 @@ module Wrangle
       @driver_owned = false
       server.run_task(
         "goal" => goal, "literals" => literals, "steps" => budget,
-        "min_confidence" => min_confidence
+        "min_confidence" => min_confidence, "teach" => teach, "no_skill" => no_skill
       )
     ensure
       @driver.close if @driver_owned

@@ -15,6 +15,12 @@ require "minitest/autorun"
 require "tmpdir"
 
 require "wrangle"
+require "fileutils"
+
+# Skill lookup is on the task and run path. Point it at an empty directory so a developer's own
+# ~/.config/wrangle/skills cannot change a test that never asked for a procedure.
+ENV["WRANGLE_SKILLS_DIR"] = File.join(Dir.tmpdir, "wrangle-empty-skills-#{Process.pid}")
+FileUtils.mkdir_p(ENV.fetch("WRANGLE_SKILLS_DIR", nil))
 
 # No test may reach the network. The session server builds a Jev client from the environment when it
 # is not given one, so a test that forgets to pass a fake quietly spends real money against the real

@@ -105,6 +105,7 @@ export default function computer(pi: ExtensionAPI) {
       "A natural imperative permits necessary reversible navigation. Consequential actions stop before delivery; this alpha cannot resume the bound proposal, so explain that limitation and do not loop.",
       "If computer reports uncertain delivery, never retry. If it reports ambiguity, ask the user to focus the intended window rather than selecting one invisibly.",
       "After computer returns, report application-level outcomes in ordinary language. Do not expose AX terminology, driver names, refs, revisions, proposals, or receipt mechanics unless debugging was requested.",
+      "Do not encode site-specific click procedures or skill names. Wrangle applies any matching stored UI skill itself; pass only the natural goal and application name.",
     ],
     parameters: Parameters,
     executionMode: "sequential",

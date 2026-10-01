@@ -26,6 +26,8 @@ Do not manually list, attach, observe, drill, find, preview, execute, or finish.
   settings changes. Consequential actions stop before delivery. This alpha cannot resume the bound
   proposal, so explain the limitation and do not call `computer` again in a loop.
 - Pass a literal only when it is exact non-secret text from the user's request. Never invent text.
+- Do not invent site click recipes or skill names. Wrangle applies any stored UI skill itself. Pass
+  only the natural goal and application name.
 - Never use shell commands during or after a computer task—not for debugging, checking the date, or
   bypassing a refusal. Never substitute a raw accessibility helper or another computer-use tool.
 - Wrangle stops at eight actions and three progressive drills. Failed or uncertain delivery is never
@@ -119,6 +121,10 @@ wrangle run --goal "Search flights: from OKC to DEN, depart 2026-10-12, return 2
 - `--literal LABEL=VALUE` supplies text for a field whose label contains `LABEL`. **The model never
   invents text.** If a fill has no matching literal, the run stops and asks you for it.
 - `--steps N` caps the loop. `--min-confidence F` moves the bar (default 0.5).
+- Do not paste a site recipe into the goal. Wrangle applies a stored UI skill when one clearly
+  matches; otherwise it explores. `--teach` after a successful `--execute` saves a thin procedure
+  for the next run. `--no-skill` forces explore. A skill is not evidence of live availability or
+  prices.
 
 ### When it hands back to you
 

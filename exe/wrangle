@@ -29,14 +29,16 @@ module Wrangle
                                           read one exact Tart guest window without mutation
         wrangle displays [--driver macos] list displays in top-left window coordinates
         wrangle doctor                    check macOS driver capabilities and permissions
-        wrangle task --app APP --goal GOAL
+        wrangle task --app APP --goal GOAL [--teach] [--no-skill]
                                           complete one bounded native desktop task (Jev by default)
+        wrangle skills [--json]           list stored UI skills
         wrangle qualify --provider NAME   run the provider conformance suite and emit a receipt
                          [--suite PATH] [--output PATH]
 
       Decide with Jev (needs JEV_API_KEY):
         wrangle decide --goal "..."        propose one action; changes nothing
-        wrangle run --goal "..." --execute act on its own, bounded by --steps
+        wrangle run --goal "..." --execute [--teach] [--no-skill]
+                                          act on its own, bounded by --steps
 
       Interactive session (survives between commands):
         wrangle open <url> [--display N]  open a window Wrangle owns
@@ -79,7 +81,7 @@ module Wrangle
       options = parse(argv)
       case command
       when "windows", "tart-observe", "displays" then public_send(command.tr("-", "_"), options)
-      when "doctor", "qualify", "task" then public_send(command, options)
+      when "doctor", "qualify", "task", "skills" then public_send(command, options)
       when "open" then start({ "url" => argv.first }, options)
       when "attach" then attach(argv.first, options)
       when "observe" then observe(options)
@@ -152,6 +154,8 @@ module Wrangle
       parser.on("--steps N", Integer) { |v| options[:steps] = v }
       parser.on("--min-confidence F", Float) { |v| options[:min_confidence] = v }
       parser.on("--execute") { options[:execute] = true }
+      parser.on("--teach") { options[:teach] = true }
+      parser.on("--no-skill") { options[:no_skill] = true }
       parser.on("--expect RE") { |v| options[:expect] = v }
       parser.on("--suite PATH") { |v| options[:suite] = v }
       parser.on("--output PATH") { |v| options[:output] = v }
@@ -302,13 +306,15 @@ module Wrangle
         steps: options[:steps] || DesktopTask::DEFAULT_STEPS,
         min_confidence: options[:min_confidence] || 0.5,
         concurrency: options[:cooperative] ? "cooperative" : "exclusive",
-        provider_options: task_provider_options(options)
+        provider_options: task_provider_options(options),
+        teach: options[:teach] || false, no_skill: options[:no_skill] || false
       )
       return emit({ "ok" => true, "value" => value }) if options[:json]
 
       puts value.fetch("message")
       puts "status   #{value.fetch("status")}"
       puts "actions  #{value.fetch("actions_taken")}"
+      show_skill(value)
       OK
     rescue Wrangle::Error, ArgumentError => e
       task_failure(e, options)
@@ -333,6 +339,20 @@ module Wrangle
 
       warn "#{reply["class"]}: #{reply["error"]}"
       UNAVAILABLE
+    end
+
+    def skills(options)
+      store = SkillStore.default
+      listed = store.load
+      return emit("skills" => listed.map(&:to_h), "skipped" => store.skipped) if options[:json]
+
+      if listed.empty?
+        puts "no skills in #{store.dir}"
+      else
+        listed.each { |skill| puts "#{skill.id}  v#{skill.version}  #{skill.summary}" }
+      end
+      store.skipped.each { |item| warn "skipped  #{item["file"]}: #{item["reason"]}" }
+      OK
     end
 
     def qualify(options)
@@ -728,7 +748,8 @@ module Wrangle
       return warn("run acts on the page. Add --execute to allow it.") || USAGE unless options[:execute]
 
       steps(options, "run", params.merge(execute: true, steps: options[:steps] || (plan.empty? ? 8 : 8 * plan.size),
-                                         plan: plan, leg_steps: options[:leg_steps], expect: options[:expect]))
+                                         plan: plan, leg_steps: options[:leg_steps], expect: options[:expect],
+                                         teach: options[:teach], no_skill: options[:no_skill]))
     end
 
     def steps(options, op, params)
@@ -744,6 +765,7 @@ module Wrangle
         counter += 1 unless step["operation"] == "GOAL"
         show_step(step, numbered ? counter : nil)
       end
+      show_skill(value)
       return OK if value["proven"].nil?
 
       puts value["proven"] ? "proven  the page shows #{value["expected"].inspect}" : nil
@@ -751,6 +773,19 @@ module Wrangle
 
       warn "unproven  the page never showed #{value["expected"].inspect}"
       STALE
+    end
+
+    def show_skill(value)
+      skill = value["skill"]
+      puts "skill   #{skill["id"]} v#{skill["version"]} (#{skill["source"]})" if skill && skill["applied"]
+      taught = value["taught"]
+      return unless taught
+
+      if taught["saved"]
+        puts "taught  #{taught["id"]} v#{taught["version"]}"
+      else
+        warn "teach    #{taught["error"]}"
+      end
     end
 
     def show_step(step, number)

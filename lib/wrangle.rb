@@ -2,6 +2,11 @@
 
 require_relative "wrangle/version"
 require_relative "wrangle/errors"
+require_relative "wrangle/ui_skill"
+require_relative "wrangle/skill_store"
+require_relative "wrangle/skill_chooser"
+require_relative "wrangle/skill_teacher"
+require_relative "wrangle/skill_run"
 require_relative "wrangle/timing"
 require_relative "wrangle/observation"
 require_relative "wrangle/desktop_observation"

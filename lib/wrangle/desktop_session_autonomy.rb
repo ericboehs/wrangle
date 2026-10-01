@@ -5,6 +5,7 @@ require "securerandom"
 
 require_relative "desktop_autonomy"
 require_relative "desktop_observation"
+require_relative "skill_run"
 
 module Wrangle
   # Goal-driven preview and bounded continuation mixed into the persistent desktop session.
@@ -24,21 +25,67 @@ module Wrangle
     def autonomous_task(request)
       raise ConfigurationError, "A desktop task requires an explicit decision provider" unless @autonomy
 
-      budget = Integer(request.fetch("steps", DEFAULT_BUDGET))
-      unless budget.between?(1, TASK_MAX_BUDGET)
-        raise ArgumentError, "Desktop task budget must be between 1 and #{TASK_MAX_BUDGET}"
+      budget = task_budget(request)
+      prepare_task_context(request)
+      state = { remaining: budget, history: [], actions: [], leg: 0 }
+      @task_history = state.fetch(:history)
+      loop do
+        result = autonomous_task_step(request.merge("goal" => @task_plan.fetch(state[:leg])), state)
+        finished = finish_task_leg(result, state, request)
+        return finished if finished
       end
+    end
 
+    def task_budget(request)
+      budget = Integer(request.fetch("steps", DEFAULT_BUDGET))
+      return budget if budget.between?(1, TASK_MAX_BUDGET)
+
+      raise ArgumentError, "Desktop task budget must be between 1 and #{TASK_MAX_BUDGET}"
+    end
+
+    def prepare_task_context(request)
       @task_drills = 0
       @task_goal = request.fetch("goal")
       @task_text_values = Array(request["literals"]&.values) + quoted_task_spans(@task_goal)
       observe unless @observation
-      state = { remaining: budget, history: [], actions: [] }
-      @task_history = state.fetch(:history)
-      loop do
-        result = autonomous_task_step(request, state)
-        return result if result
-      end
+      store = SkillRun.store_for(request)
+      @task_skill_prepared = SkillRun.prepare(request, store:, app: @scope.app, host: nil, asker: @provider)
+      @task_plan = @task_skill_prepared.plan
+      record_task_skill
+    end
+
+    def finish_task_leg(result, state, request)
+      return nil unless result
+      return nil if advance_task_leg?(result, state)
+
+      annotate_task_skill(result, request)
+    end
+
+    # A finished leg is not a finished task. The next leg still has to be decided against a fresh
+    # observation; the skill only names the sub-goal.
+    def advance_task_leg?(result, state)
+      return false unless result["status"] == "done" && state[:leg] < @task_plan.length - 1
+
+      state[:leg] += 1
+      state[:history] << { "operation" => "GOAL", "label" => @task_plan.fetch(state[:leg]) }
+      true
+    end
+
+    def annotate_task_skill(result, request)
+      SkillRun.complete(
+        result, @task_skill_prepared, store: SkillRun.store_for(request), page: nil,
+                                      teach: request["teach"], goal: @task_goal
+      )
+    end
+
+    def record_task_skill
+      resolution = @task_skill_prepared.resolution
+      return unless resolution.applied
+
+      @log&.record(
+        "skill", "id" => resolution.skill.id, "version" => resolution.skill.version,
+                 "source" => resolution.source
+      )
     end
 
     def autonomous_preview(request)

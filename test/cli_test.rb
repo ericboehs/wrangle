@@ -304,6 +304,122 @@ class CliTest < Minitest::Test
     end
   end
 
+  def test_help_mentions_stored_ui_skills
+    out, status = run_cli("--help")
+
+    assert_equal 0, status
+    assert_match(/wrangle skills/, out)
+    assert_match(/--teach/, out)
+    assert_match(/--no-skill/, out)
+  end
+
+  def test_skill_flags_are_usage_errors_until_a_goal_is_present
+    out, status = run_cli("run", "--teach", "--no-skill")
+    assert_equal 2, status
+    assert_match(/needs a goal/, out)
+
+    out, status = run_cli("task", "--teach", "--no-skill", "--json")
+    assert_equal 2, status
+    assert_match(/needs --app APP and --goal GOAL/, out)
+  end
+
+  def test_skills_lists_a_stored_procedure_and_an_empty_store
+    Dir.mktmpdir do |dir|
+      out, status = run_cli("skills", env: { "WRANGLE_SKILLS_DIR" => dir })
+      assert_equal 0, status
+      assert_match(/no skills in/, out)
+
+      Wrangle::SkillStore.new(dir:).save(
+        Wrangle::UiSkill.build(
+          id: "finder-open", version: 1, title: "Open search", summary: "Open the search window.",
+          apps: ["Finder"], legs: ["Open Search."], stop: "Search is visible."
+        )
+      )
+      out, status = run_cli("skills", env: { "WRANGLE_SKILLS_DIR" => dir })
+      assert_equal 0, status
+      assert_match(/finder-open  v1  Open the search window/, out)
+
+      File.write(File.join(dir, "broken.json"), "{")
+      out, status = run_cli("skills", "--json", env: { "WRANGLE_SKILLS_DIR" => dir })
+      assert_equal 0, status
+      payload = JSON.parse(out)
+      assert_equal "finder-open", payload.dig("skills", 0, "id")
+      assert_equal "invalid json", payload.dig("skipped", 0, "reason")
+
+      out, status = run_cli("skills", env: { "WRANGLE_SKILLS_DIR" => dir })
+      assert_equal 0, status
+      assert_match(/skipped  broken.json: invalid json/, out)
+    end
+  end
+
+  def test_a_desktop_task_teaches_a_skill_and_the_next_task_reuses_it
+    with_fake_commands do |env|
+      dir = File.join(env.fetch("WRANGLE_HOME"), "skills")
+      env = env.merge("WRANGLE_SKILLS_DIR" => dir)
+      trace = File.join(env.fetch("WRANGLE_HOME"), "task-trace.jsonl")
+      write_done_trace(trace)
+
+      out, status = run_cli(
+        "task", "--app", "Finder", "--goal", "Inspect the fixture", "--provider", "replay",
+        "--provider-trace", trace, "--teach", "--json", env:
+      )
+      reply = JSON.parse(out)
+      assert_equal 0, status, out
+      assert_equal "done", reply.dig("value", "status")
+      assert_equal false, reply.dig("value", "skill", "applied")
+      assert reply.dig("value", "taught", "saved")
+      taught_id = reply.dig("value", "taught", "id")
+      body = File.read(reply.dig("value", "taught", "path"))
+      refute_includes body, "Native Open"
+      refute_includes body, "snap-"
+
+      write_done_trace(trace)
+      out, status = run_cli(
+        "task", "--app", "Finder", "--goal", "Inspect the fixture", "--provider", "replay",
+        "--provider-trace", trace, "--json", env:
+      )
+      reply = JSON.parse(out)
+      assert_equal 0, status, out
+      assert_equal true, reply.dig("value", "skill", "applied")
+      assert_equal "clear", reply.dig("value", "skill", "source")
+      assert_equal taught_id, reply.dig("value", "skill", "id")
+    end
+  end
+
+  def test_a_human_task_reports_the_skill_and_a_save_failure
+    with_fake_commands do |env|
+      dir = File.join(env.fetch("WRANGLE_HOME"), "skills")
+      env = env.merge("WRANGLE_SKILLS_DIR" => dir)
+      trace = File.join(env.fetch("WRANGLE_HOME"), "human-trace.jsonl")
+      write_done_trace(trace)
+      out, status = run_cli(
+        "task", "--app", "Finder", "--goal", "Inspect the fixture", "--provider", "replay",
+        "--provider-trace", trace, "--teach", env:
+      )
+      assert_equal 0, status, out
+      assert_match(/taught  /, out)
+      assert_match(/status   done/, out)
+
+      write_done_trace(trace)
+      out, status = run_cli(
+        "task", "--app", "Finder", "--goal", "Inspect the fixture", "--provider", "replay",
+        "--provider-trace", trace, env:
+      )
+      assert_equal 0, status, out
+      assert_match(/skill   /, out)
+
+      blocked = File.join(env.fetch("WRANGLE_HOME"), "not-a-directory")
+      File.write(blocked, "")
+      write_done_trace(trace)
+      out, status = run_cli(
+        "task", "--app", "Finder", "--goal", "Inspect something else", "--provider", "replay",
+        "--provider-trace", trace, "--teach", env: env.merge("WRANGLE_SKILLS_DIR" => blocked)
+      )
+      assert_equal 0, status, out
+      assert_match(/teach    /, out)
+    end
+  end
+
   private
 
   def run_cli_input(input, *argv, env:)
@@ -311,6 +427,16 @@ class CliTest < Minitest::Test
       env, RbConfig.ruby, "--disable-gems", "-I", LIB, EXE, *argv, stdin_data: input
     )
     [out + error, status.exitstatus]
+  end
+
+  def write_done_trace(path)
+    File.write(path, JSON.generate(
+      "name" => "action",
+      "answer" => {
+        "choice" => "DONE", "confidence" => 0.91,
+        "probabilities" => { "a1" => 0.02, "DONE" => 0.91, "BLOCKED" => 0.04, "HANDOFF" => 0.03 }
+      }
+    ) << "\n")
   end
 
   def with_fake_commands(helper_mode: "driver")

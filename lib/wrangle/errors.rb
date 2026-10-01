@@ -86,4 +86,8 @@ module Wrangle
 
   # Raised when Wrangle was asked to decide without the configuration to do it.
   class ConfigurationError < Error; end
+
+  # A skill file that does not match the procedure schema. Not a session failure: a bad file is
+  # skipped, and a teach that cannot be saved is reported beside the run that already succeeded.
+  class SkillInvalid < ArgumentError; end
 end

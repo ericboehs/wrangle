@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "delegate"
+
 # A stand-in for the TypeSafe endpoint that answers from a script instead of a network call.
 #
 # The point is not to fake a model but to fake a *well-formed* model: every answer it returns is
@@ -107,5 +109,43 @@ class FlakySession
     return super unless @session.respond_to?(name)
 
     @session.public_send(name, ...)
+  end
+end
+
+# Counts reads so Jev can hold its answer until the watcher has taken one. A few accelerated
+# milliseconds of thinking against a one-millisecond poll is a race a loaded runner loses: the
+# answer lands before the first look, there is nothing to have watched, and the test fails for a
+# reason the code under test never had.
+class LookCounter < SimpleDelegator
+  def initialize(session)
+    super
+    @looks = 0
+    @lock = Mutex.new
+    @looked = ConditionVariable.new
+  end
+
+  def observe(...)
+    super.tap do
+      @lock.synchronize do
+        @looks += 1
+        @looked.broadcast
+      end
+    end
+  end
+
+  # A ScriptedJev sleeper that thinks for exactly as long as it takes the page to be read `looks`
+  # times. Once that has happened it answers immediately, so later decisions are not held up.
+  def until_looked(looks) = ->(_seconds) { await(looks) }
+
+  def await(looks, timeout: 5)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    @lock.synchronize do
+      while @looks < looks
+        left = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        raise "the page was looked at #{@looks} times, never #{looks}" unless left.positive?
+
+        @looked.wait(@lock, left)
+      end
+    end
   end
 end

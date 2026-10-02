@@ -60,3 +60,6 @@ Style/FormatStringToken:
 Metrics/ModuleLength:
   Exclude:
     - "exe/wrangle"
+    # SkillSchema is the only door a document gets through. Splitting a rejection from the field it
+    # rejects would hide which documents cannot enter.
+    - "lib/wrangle/ui_skill.rb"

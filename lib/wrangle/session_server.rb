@@ -6,6 +6,7 @@ require "socket"
 
 require_relative "run_loop"
 require_relative "safari"
+require_relative "skill_run"
 require_relative "timing"
 
 module Wrangle
@@ -376,15 +377,33 @@ module Wrangle
       @jev ||= Jev.from_env(endpoint: request["endpoint"], model: request["model"])
     end
 
+    # Host is only needed when a stored procedure might apply. An empty store, an explicit plan,
+    # or --no-skill must not take an extra look before the loop.
+    def skill_host(request, store)
+      return if SkillRun.skip?(request, store)
+
+      UiSkill.host_of(current["url"])
+    end
+
+    def skill_asker(request)
+      lambda do |state, criteria, instructions|
+        SkillChooser.ask_jev(jev(request), state, criteria, instructions)
+      end
+    end
+
     # No fixed pause anywhere. Waiting is an operation the model can choose when a control is missing
     # or results are still loading, so a page that updates instantly costs nothing.
     def run_goal(request)
       raise ArgumentError, "run needs execute: true to touch the page" unless request["execute"]
 
       expect = request["expect"] && Regexp.new(request["expect"], Regexp::IGNORECASE)
-      plan = Array(request["plan"]).filter_map { |goal| presence(goal) }
-      plan = [request["goal"]] if plan.empty?
-      summarise(request, RunLoop.new(self, request, expect, timing: @timing).run(plan), expect)
+      store = SkillRun.store_for(request)
+      prepared = SkillRun.prepare(
+        request, store:, app: "Safari", host: skill_host(request, store), asker: skill_asker(request)
+      )
+      steps = RunLoop.new(self, prepared.request, expect, timing: @timing).run(prepared.plan)
+      summary = summarise(prepared.request, steps, expect)
+      SkillRun.complete(summary, prepared, store:, page: @page, teach: request["teach"])
     end
 
     def summarise(request, steps, expect)

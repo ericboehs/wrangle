@@ -26,9 +26,9 @@ class RunLoopTest < Minitest::Test
     super
   end
 
-  def serving(turns, stale_acts: 0, thinks_for: 0, **config)
-    @jev = ScriptedJev.new(turns, thinks_for:, sleeper: @clock.method(:sleep))
-    session = dedicated(**config)
+  def serving(turns, stale_acts: 0, thinks_for: 0, sleeper: @clock.method(:sleep), session: nil, **config)
+    @jev = ScriptedJev.new(turns, thinks_for:, sleeper:)
+    session ||= dedicated(**config)
     session = FlakySession.new(session, stale_acts:) if stale_acts.positive?
     server = Wrangle::SessionServer.new(@socket, {}, session:, jev: @jev, timing: @clock)
     @thread = Thread.new { server.run }
@@ -359,8 +359,13 @@ class RunLoopTest < Minitest::Test
   # `fetch`, the CLI always sent the key as null, and `nil.to_f` is zero. Nothing waited for a page
   # for months. Run underneath the request the looks are free, so this asserts they happen at all.
   def test_the_page_is_watched_while_jev_is_thinking
+    # Jev holds its first answer until the watcher has looked: the read `decide` takes of the page it
+    # asks about, then one taken while waiting. Racing a timed think against the poll instead made
+    # this a scheduling assertion that a loaded runner could lose.
+    looks = LookCounter.new(dedicated)
     client = serving([{ operation: "CLICK", target: CLICK, confidence: 0.9 },
-                      { operation: "DONE", confidence: 0.9 }], thinks_for: 0.2)
+                      { operation: "DONE", confidence: 0.9 }],
+                     session: looks, thinks_for: 0.2, sleeper: looks.until_looked(2))
 
     run_plan(client, plan: ["Press the button"])
 

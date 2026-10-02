@@ -4,11 +4,12 @@ require_relative "test_helper"
 
 class DesktopSessionServerTest < Minitest::Test
   class FakeProvider
-    attr_reader :capabilities, :states
+    attr_reader :capabilities, :states, :names
 
     def initialize(*choices, qualified: true)
       @choices = choices
       @states = []
+      @names = []
       @capabilities = Wrangle::DecisionProvider::Capabilities.new(
         protocol: Wrangle::DecisionProvider::PROTOCOL, max_choices: 16, confidence: true,
         hierarchical: true, mutation_qualified: qualified, provider: "fixture", model: "recorded-v1",
@@ -17,6 +18,8 @@ class DesktopSessionServerTest < Minitest::Test
     end
 
     def choose(state:, name:, criteria:, instructions:)
+      @names ||= []
+      @names << name
       @states << state
       choice, confidence = @choices.shift
       raise "#{choice} was not offered for #{name}" unless criteria.key?(choice)
@@ -1184,6 +1187,106 @@ class DesktopSessionServerTest < Minitest::Test
     assert_nil @driver.executed
   end
 
+  def test_a_desktop_task_refuses_a_blank_goal_before_it_touches_a_window
+    driver = Object.new
+    driver.define_singleton_method(:close) { nil }
+
+    error = assert_raises(ArgumentError) { Wrangle::DesktopTask.new(driver:).run(app: "Finder", goal: " ") }
+    assert_match(/goal is required/, error.message)
+  end
+
+  def test_a_clear_desktop_skill_names_the_leg_without_bypassing_the_action_policy
+    dir = File.join(@directory, "skills")
+    save_desktop_skill(dir, id: "finder-open", legs: ["Press the Open control. Type \"skill-span\"."])
+    before = @driver.state("one", "Open")
+    after = @driver.state("two", "Close")
+    @driver.observations = [before, before, after]
+    provider = FakeProvider.new(["a1", 0.9], ["DONE", 0.95])
+    server = server_seam(provider:)
+
+    result = server.send(:autonomous_task, "goal" => "Open \"user-span\"", "steps" => 3, "skills_dir" => dir)
+
+    assert_equal "done", result["status"]
+    assert_equal "finder-open", result.dig("skill", "id")
+    assert_equal "clear", result.dig("skill", "source")
+    assert_equal %w[action action], provider.names
+    assert_includes provider.states.first["goal"], "Press the Open control"
+    assert_includes provider.states.first["goal"], "Overall goal: Open \"user-span\""
+    assert_includes provider.states.first["goal"], "authoritative"
+    assert_equal({ operation: "PRESS", ref: "@s:e1", text: nil }, @driver.executed)
+    values = server.instance_variable_get(:@task_text_values)
+    assert_includes values, "user-span"
+    refute_includes values, "skill-span"
+    logged = @log.events.find { |event| event["event"] == "skill" }
+    assert_equal "finder-open", logged["id"]
+    refute_includes JSON.generate(logged), "user-span"
+  end
+
+  def test_a_desktop_skill_advances_legs_and_can_be_taught_without_copying_the_observation
+    dir = File.join(@directory, "skills")
+    save_desktop_skill(dir, id: "finder-legs", legs: ["Open Search.", "Confirm Search is visible."])
+    provider = FakeProvider.new(["DONE", 0.95], ["DONE", 0.95])
+    server = server_seam(provider:, log: nil)
+
+    result = server.send(:autonomous_task, "goal" => "Open Search", "steps" => 3, "skills_dir" => dir,
+                                           "teach" => true)
+
+    assert_equal "done", result["status"]
+    assert_includes provider.states[0]["goal"], "Open Search."
+    assert_includes provider.states[1]["goal"], "Confirm Search is visible."
+    assert_equal 2, result.dig("taught", "version")
+    saved = File.read(result.dig("taught", "path"))
+    refute_includes saved, "snap-one"
+    refute_includes saved, "@s:e1"
+    refute_includes saved, "Overall goal:"
+  end
+
+  def test_several_desktop_skills_are_chosen_only_from_the_index
+    dir = File.join(@directory, "skills")
+    save_desktop_skill(dir, id: "finder-search", terms: %w[open search])
+    save_desktop_skill(dir, id: "finder-window", terms: %w[open window])
+    provider = FakeProvider.new(["finder-search", 0.8], ["DONE", 0.95])
+    server = server_seam(provider:)
+
+    result = server.send(:autonomous_task, "goal" => "Open the search window", "steps" => 2, "skills_dir" => dir)
+
+    assert_equal %w[skill action], provider.names
+    assert_equal "choice", result.dig("skill", "source")
+    assert_equal "finder-search", result.dig("skill", "id")
+    assert_includes provider.states[1]["goal"], "Overall goal: Open the search window"
+    refute_includes provider.states[0].keys, "text"
+  end
+
+  def test_a_declined_desktop_skill_explores_and_a_host_skill_does_not_apply
+    dir = File.join(@directory, "skills")
+    save_desktop_skill(dir, id: "finder-search", terms: %w[open search])
+    save_desktop_skill(dir, id: "finder-window", terms: %w[open window])
+    save_desktop_skill(dir, id: "site-only", apps: ["Safari"], hosts: ["example.test"], terms: %w[open search])
+    provider = FakeProvider.new(["none", 0.8], ["DONE", 0.95])
+    server = server_seam(provider:)
+
+    result = server.send(:autonomous_task, "goal" => "Open the search window", "steps" => 2, "skills_dir" => dir)
+
+    assert_equal "declined", result.dig("skill", "source")
+    assert_equal false, result.dig("skill", "applied")
+    assert_equal "Open the search window", provider.states[1]["goal"]
+    refute_includes provider.states[1]["goal"], "Overall goal:"
+  end
+
+  def test_no_skill_and_a_missing_log_leave_the_desktop_task_on_the_explore_path
+    dir = File.join(@directory, "skills")
+    save_desktop_skill(dir, id: "finder-open")
+    provider = FakeProvider.new(["DONE", 0.95])
+    server = server_seam(provider:, log: nil)
+
+    result = server.send(:autonomous_task, "goal" => "Open the fixture", "steps" => 1, "skills_dir" => dir,
+                                           "no_skill" => true)
+
+    assert_equal ["action"], provider.names
+    assert_equal "disabled", result.dig("skill", "source")
+    assert_equal "Open the fixture", provider.states.first["goal"]
+  end
+
   def test_malformed_and_unknown_requests_are_refused
     server = server_seam
 
@@ -1229,6 +1332,15 @@ class DesktopSessionServerTest < Minitest::Test
   end
 
   private
+
+  def save_desktop_skill(dir, id:, legs: ["Press Open."], terms: [], apps: ["Finder"], hosts: [])
+    Wrangle::SkillStore.new(dir:).save(
+      Wrangle::UiSkill.build(
+        id:, version: 1, title: "Open the window", summary: "Press the named control.",
+        apps:, hosts:, goal_terms: terms, legs:, stop: "The control was pressed."
+      )
+    )
+  end
 
   def serving
     server = Wrangle::DesktopSessionServer.new(

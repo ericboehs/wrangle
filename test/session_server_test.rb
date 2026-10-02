@@ -49,8 +49,17 @@ class SessionServerTest < Minitest::Test
 
   def reads = page_ops.count { _1["op"] == "observe" }
 
+  # Two looks: the one `decide` takes of the page it asks about, then the watcher's own.
+  def answers_after_the_watcher_looks(turns)
+    looks = LookCounter.new(dedicated)
+    Wrangle::SessionServer.new(
+      @socket, {}, session: looks,
+                   jev: ScriptedJev.new(turns, thinks_for: 0.2, sleeper: looks.until_looked(2)), **timing
+    )
+  end
+
   def test_a_rejected_decision_reuses_the_read_taken_while_jev_was_thinking
-    server = seam([{ operation: "CLICK", target: "Find stays", confidence: 0.9 }])
+    server = answers_after_the_watcher_looks([{ operation: "CLICK", target: "Find stays", confidence: 0.9 }])
     server.decide({ "goal" => "Press it" })
     taken = reads
     server.observe!
@@ -61,7 +70,7 @@ class SessionServerTest < Minitest::Test
   # The one way the watch could report the wrong thing: a read from before an action outliving the
   # page it was taken from. It is stamped with the action count, so after a mutation it is dropped.
   def test_a_read_taken_before_an_action_is_never_promoted_after_it
-    server = seam([{ operation: "CLICK", target: "Find stays", confidence: 0.9 }])
+    server = answers_after_the_watcher_looks([{ operation: "CLICK", target: "Find stays", confidence: 0.9 }])
     step = server.decide({ "goal" => "Press it" })
     server.perform(step.fetch("choice"), nil)
     taken = reads

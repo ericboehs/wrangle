@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+- UI skills: `wrangle run` and `wrangle task` apply a matching procedure from
+  `~/.config/wrangle/skills`. Jev may choose only an indexed skill id or `none`. `--teach` saves a
+  thin skill after success. A skill is a plan of sub-goals, not authority over live page state.
+
 ## [0.2.0] - 2026-09-30
 
 - Native macOS desktop engine: `wrangle task --app APP --goal GOAL` runs a bounded

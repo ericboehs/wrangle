@@ -201,7 +201,8 @@ wrangle task --app Finder --goal "Open Search in the disposable Finder window"
 ```
 
 `windows`, `attach`, `observe`, `drill`, `preview`, `execute`, and `close` remain debug and conformance
-interfaces; an outer agent does not orchestrate them during a normal task.
+interfaces; an outer agent does not orchestrate them during a normal task. A matching stored UI skill
+is applied inside the task; see [Stored UI skills](#stored-ui-skills).
 
 Desktop tasks use Jev when neither `--provider` nor `WRANGLE_DESKTOP_PROVIDER` is set. An explicitly
 configured provider overrides that default, and Wrangle never falls back between providers. No provider is
@@ -371,6 +372,29 @@ confidence, where a whole-task goal leaves the model weighing whether it is alre
 
 A leg that cannot finish ends the plan. Later legs assume the earlier ones happened, so guessing
 past a failure is how a run types a date into a passenger field.
+
+### Stored UI skills
+
+Wrangle can reuse a short procedure without putting site recipes in the agent prompt or the gem.
+Skills live in `~/.config/wrangle/skills` (`WRANGLE_SKILLS_DIR` overrides that). Each one is an
+ordered plan of sub-goals for one app or host — not selectors, coordinates, prices, or a saved page.
+Live state is still checked on every step, and a skill is never evidence that a slot is free or a
+price is current.
+
+`wrangle run` and `wrangle task` (including the Pi `computer` tool) look up a skill automatically.
+Zero matches, or only a weak one, explore as usual. One clear app or host match is used without
+another model call. Several clear matches are offered to Jev as a skill id or `none`; it cannot
+invent a name. An explicit `--plan` is left alone. `--no-skill` forces explore.
+
+After a successful run, `--teach` writes a thin skill and bumps its version if that same goal is
+taught again. Re-teach when the UI drifts. Keep skills short.
+
+```bash
+wrangle open "https://example.test/reserve"
+wrangle run --goal "Find a table for two at 7pm" --execute --teach
+wrangle skills
+wrangle run --goal "Find a table for two at 7pm" --execute
+```
 
 ### When it stops
 

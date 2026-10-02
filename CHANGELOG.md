@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.3.0] - 2026-10-02
 
 - UI skills: `wrangle run` and `wrangle task` apply a matching procedure from
   `~/.config/wrangle/skills`. Jev may choose only an indexed skill id or `none`. `--teach` saves a

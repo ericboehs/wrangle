@@ -4,6 +4,7 @@ require "json"
 require "securerandom"
 
 require_relative "desktop_autonomy"
+require_relative "desktop_decider"
 require_relative "desktop_observation"
 require_relative "skill_run"
 
@@ -45,6 +46,7 @@ module Wrangle
 
     def prepare_task_context(request)
       @task_drills = 0
+      @task_typed = []
       @task_goal = request.fetch("goal")
       @task_text_values = Array(request["literals"]&.values) + quoted_task_spans(@task_goal)
       observe unless @observation
@@ -162,7 +164,7 @@ module Wrangle
       halted = task_preflight_result(proposal, pending, assessment, state)
       return halted if halted
 
-      task_receipt_result(proposal, pending, assessment, state)
+      task_receipt_result(proposal, pending, assessment, state, typed: choice.text)
     end
 
     def escalate_partial_task_observation?
@@ -183,14 +185,22 @@ module Wrangle
                elsif !@provider.mutation_qualified?
                  "provider_not_qualified"
                end
-      task_result(status, **state.slice(:remaining, :actions), assessment:, pending:) if status
+      return unless status
+
+      result = task_result(status, **state.slice(:remaining, :actions), assessment:, pending:)
+      return result unless status == "approval_required"
+
+      # The proposal stays in memory, bound to this live session. Only the tool sees the binding.
+      park_approval_from_task!(result, @proposals.fetch(proposal.fetch("proposal_id")))
     end
 
-    def task_receipt_result(proposal, pending, assessment, state)
+    def task_receipt_result(proposal, pending, assessment, state, typed: nil)
       action_receipt = execute("proposal_id" => proposal.fetch("proposal_id"))
       state[:actions] << pending.merge(action_receipt.slice("dispatch", "effect", "reason", "terminal"))
       dispatch = action_receipt.fetch("dispatch")
       return task_result(dispatch, **state.slice(:remaining, :actions), assessment:) unless dispatch == "delivered"
+
+      remember_typed_text(pending, typed)
 
       state[:remaining] -= 1
       state[:history] << task_history_entry(pending, action_receipt["effect"])
@@ -221,6 +231,14 @@ module Wrangle
       proposal["policy"] = proposal.fetch("policy").merge("provider_qualified" => qualified)
     end
 
+    # In memory only (never logged): what this task has already typed, so a later consequential click
+    # can show the person the text it would send.
+    def remember_typed_text(pending, typed)
+      return unless typed && pending["operation"] == "SET_TEXT"
+
+      @task_typed << typed
+    end
+
     def task_history_entry(action, effect)
       entry = action.slice("operation", "role", "label")
       label = entry["label"]
@@ -232,7 +250,7 @@ module Wrangle
       result = {
         "schema" => "wrangle.task.v1", "status" => status, "app" => @scope.app,
         "actions_taken" => @actions, "remaining" => remaining, "root_preserved" => true,
-        "message" => task_message(status), "decision" => task_decision(assessment),
+        "message" => task_message(status), "decider" => task_decider(assessment),
         "pending_action" => pending, "actions" => actions, "evidence" => task_evidence(status)
       }.compact
       @log&.record(
@@ -242,7 +260,9 @@ module Wrangle
       result
     end
 
-    def task_decision(assessment)
+    # Provenance of the typed choice. Named `decider`, not `decision`, so it cannot be confused with
+    # the computer tool's own `decision` (approve/decline) parameter.
+    def task_decider(assessment)
       choice = assessment.choice
       { "operation" => choice.operation, "confidence" => choice.confidence,
         "provider" => choice.provider, "model" => choice.model }
@@ -308,9 +328,7 @@ module Wrangle
       end
     end
 
-    def quoted_task_spans(goal)
-      goal.scan(/"([^"]+)"|'([^']+)'/).map { |double, single| double || single }.uniq
-    end
+    def quoted_task_spans(goal) = DesktopDecider.quoted_spans(goal)
 
     def task_message(status)
       {

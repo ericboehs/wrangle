@@ -4,6 +4,8 @@ require "fileutils"
 require "json"
 require "socket"
 
+require_relative "desktop_bound_approval"
+require_relative "desktop_session_protocol"
 require_relative "desktop_dispatch"
 require_relative "desktop_effect"
 require_relative "desktop_session_autonomy"
@@ -20,6 +22,8 @@ require_relative "tart_guest_driver"
 module Wrangle
   # Holds one exact macOS root window across short-lived CLI invocations.
   class DesktopSessionServer
+    include DesktopBoundApproval
+    include DesktopSessionProtocol
     include DesktopDispatch
     include DesktopProgressiveObservation
     include DesktopSessionAutonomy
@@ -44,25 +48,30 @@ module Wrangle
       @view = nil
       @full_observation = false
       @proposals = {}
+      @consumed = {}
       @runs = {}
       @actions = 0
       @poisoned = nil
+      @parked_approval = false
+      @approval_resolved = false
+      @serving = false
     end
 
     def run
-      FileUtils.mkdir_p(File.dirname(@socket_path))
       FileUtils.rm_f(@socket_path)
       start_runtime(log_session: File.basename(@socket_path, ".sock"))
-      serve(UNIXServer.new(@socket_path))
+      serve(bind_private_socket(@socket_path))
     ensure
       shutdown
     end
 
+    # A consequential stop parks its proposal: the lease, driver, and in-memory proposal stay live
+    # so one bound approve or decline can resolve it. Every other ending shuts down as before.
     def run_task(request)
       start_runtime(log_session: "task")
       autonomous_task(request)
     ensure
-      shutdown
+      shutdown unless @parked_approval
     end
 
     private
@@ -91,43 +100,6 @@ module Wrangle
       @guest_driver_class.new(vm_name: @options.fetch("vm"), guest_app: @options.fetch("app"), guest_helper: helper)
     end
 
-    def serve(server)
-      File.chmod(0o600, @socket_path)
-      loop do
-        client = server.accept
-        line = client.gets
-        next client.close unless line
-
-        request = parse(line)
-        client.puts(JSON.generate(dispatch(request)))
-        client.close
-        break if request["op"] == "close"
-      end
-    ensure
-      server.close
-    end
-
-    def parse(line)
-      JSON.parse(line)
-    rescue JSON::ParserError
-      { "op" => "bad" }
-    end
-
-    def dispatch(request)
-      { "ok" => true, "value" => handle(request) }
-    rescue Wrangle::Error => e
-      terminal = e.is_a?(ScopeLost) || e.is_a?(DeliveryUnknown) || e.is_a?(DriverUnavailable) ||
-                 (e.is_a?(DriverRefusal) && e.delivery_unknown?)
-      log_refusal(request, e)
-      refusal(e.class.name.split("::").last, e.message, terminal:)
-    rescue ArgumentError => e
-      log_refusal(request, e)
-      refusal("ArgumentError", e.message, terminal: false)
-    rescue StandardError => e
-      log_refusal(request, e)
-      refusal(e.class.name, "internal error: #{e.message} (#{e.backtrace&.first})", terminal: true)
-    end
-
     def handle(request)
       case request["op"]
       when "status" then status
@@ -136,6 +108,8 @@ module Wrangle
       when "inspect" then current
       when "preview" then request["goal"] ? autonomous_preview(request) : preview(request)
       when "execute" then execute(request)
+      when "approve" then approve(request)
+      when "decline" then decline(request)
       when "continue" then continue_run(request)
       when "close"
         { "closing" => true, "root_preserved" => true,
@@ -362,8 +336,12 @@ module Wrangle
     end
 
     def shutdown
+      return if @shut_down
+
+      @shut_down = true
       @log&.record("close", "scope_id" => @scope&.id, "actions_taken" => @actions)
-      @registry&.release(@lease)
+      @registry&.release(@lease) if @lease
+      @lease = nil
       @driver&.close
       return unless @socket_path
 

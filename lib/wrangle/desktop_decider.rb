@@ -37,6 +37,13 @@ module Wrangle
       def action? = !terminal && operation != "DRILL"
     end
 
+    # The one parser for exact quoted goal spans. The decider offers these as SET_TEXT values, task
+    # evidence redacts them, and the tool-only `pending_text` binding field carries the one chosen, so
+    # the text a person approves is byte-for-byte the text the driver types.
+    def self.quoted_spans(goal)
+      goal.to_s.scan(/"([^"]+)"|'([^']+)'/).map { |double, single| double || single }.uniq
+    end
+
     def initialize(goal:, literals:, provider:)
       raise ArgumentError, "A desktop goal is required" if goal.to_s.strip.empty?
 
@@ -232,9 +239,7 @@ module Wrangle
       offered
     end
 
-    def quoted_spans
-      @goal.scan(/"([^"]+)"|'([^']+)'/).map { |double, single| double || single }.uniq
-    end
+    def quoted_spans = self.class.quoted_spans(@goal)
 
     def credential?(candidate)
       [candidate["label"], candidate["role"]].compact.any? do |text|

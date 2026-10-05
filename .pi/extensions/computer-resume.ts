@@ -10,6 +10,7 @@ export type ResumeBinding = {
   revision: string | number;
   session?: string;
   ttl_seconds?: number;
+  pending_text?: string;
 };
 
 const TOKEN_VERSION = "v1";
@@ -40,6 +41,7 @@ const SECRET_KEYS = new Set([
   "ttl_seconds",
   "before_revision",
   "after_revision",
+  "verification_error",
 ]);
 
 export function resetResumeStateForTests(): void {
@@ -87,6 +89,7 @@ export function mintResumeToken(binding: ResumeBinding, now = Date.now()): strin
     revision: binding.revision,
     session: binding.session ?? null,
     ttl_seconds: typeof binding.ttl_seconds === "number" ? binding.ttl_seconds : DEFAULT_TTL_SECONDS,
+    pending_text: typeof binding.pending_text === "string" ? binding.pending_text : null,
     iat: now,
   }), "utf8");
   const cipher = createCipheriv("aes-256-gcm", TOKEN_KEY, iv);
@@ -179,6 +182,9 @@ export function decodeResumeToken(token: string, now = Date.now()): DecodeResult
     iat,
   };
   if (typeof session === "string" && session.length > 0) binding.session = session;
+  if (typeof parsed?.pending_text === "string" && parsed.pending_text.length > 0) {
+    binding.pending_text = parsed.pending_text;
+  }
   return { ok: true, binding };
 }
 
@@ -335,6 +341,12 @@ function readBinding(value: Json): ResumeBinding | null {
   if (typeof source.ttl_seconds === "number" && Number.isFinite(source.ttl_seconds)) {
     binding.ttl_seconds = source.ttl_seconds;
   }
+  const pending_text = typeof source.pending_text === "string" ? source.pending_text
+    : typeof value.pending_text === "string" ? value.pending_text
+    : undefined;
+  if (typeof pending_text === "string" && pending_text.length > 0) {
+    binding.pending_text = pending_text;
+  }
   return binding;
 }
 
@@ -351,9 +363,9 @@ export function prepareApprovalRequired(
   context: { app?: string } = {},
   now = Date.now(),
 ): PreparedApproval {
-  // PR #5 does not expose pending_text; keep exact text only if an engine ever adds it.
-  const pending_text = typeof value.pending_text === "string" ? value.pending_text : undefined;
   const binding = readBinding(value);
+  const pending_text = binding?.pending_text
+    ?? (typeof value.pending_text === "string" ? value.pending_text : undefined);
 
   if (!binding || typeof binding.session !== "string" || binding.session.length === 0) {
     const agentValue = stripSecrets({ ...value }) as Json;
@@ -382,12 +394,61 @@ export function prepareAgentValue(value: Json): Json {
   return stripSecrets({ ...value }) as Json;
 }
 
+export type SendGateResult =
+  | { action: "proceed"; confirmMessage: string }
+  | { action: "blocked"; status: "confirmation_needed" | "not_confirmed"; message: string; hint: string };
+
+/**
+ * Person-in-the-loop gate for decision "send".
+ * Uses Pi's ctx.ui.confirm(title, message) when hasUI is true.
+ * See @earendil-works/pi-coding-agent dist/core/extensions/types.d.ts ExtensionUIContext.confirm
+ * and examples/extensions/confirm-destructive.ts.
+ */
+export async function gateSendApproval(opts: {
+  pendingText: string | undefined;
+  hasUI: boolean;
+  ui?: { confirm: (title: string, message: string) => Promise<boolean> } | null;
+}): Promise<SendGateResult> {
+  if (typeof opts.pendingText !== "string" || opts.pendingText.length === 0) {
+    return {
+      action: "blocked",
+      status: "not_confirmed",
+      message: "Nothing was sent. The exact pending text is unavailable.",
+      hint: agentHintFor("not_confirmed"),
+    };
+  }
+  if (!opts.hasUI || !opts.ui || typeof opts.ui.confirm !== "function") {
+    return {
+      action: "blocked",
+      status: "confirmation_needed",
+      message: "Nothing was sent. A person must confirm this in the tool row.",
+      hint: agentHintFor("confirmation_needed"),
+    };
+  }
+  const confirmed = await opts.ui.confirm("Send?", opts.pendingText);
+  if (!confirmed) {
+    return {
+      action: "blocked",
+      status: "not_confirmed",
+      message: "Nothing was sent. You did not confirm.",
+      hint: agentHintFor("not_confirmed"),
+    };
+  }
+  return { action: "proceed", confirmMessage: opts.pendingText };
+}
+
 export function agentHintFor(status: string): string {
   switch (status) {
     case "done":
       return "The task finished and control was released. Summarize only application-level facts supported by evidence.";
+    case "done_unverified":
+      return "Something may have been sent, but Wrangle could not verify the result. Do not claim the result is visible. Do not retry.";
     case "approval_required":
       return "Nothing consequential was sent. Explain the pending action in ordinary language from pending_action (operation, role, label, and text source/character count only). Ask the person, then call computer once with only their decision and the resume_token. Do not claim it was sent. A chat yes is not approval; the tool row is.";
+    case "confirmation_needed":
+      return "Nothing was sent. A person must confirm Send on the tool row. Do not claim it was sent and do not retry on your own.";
+    case "not_confirmed":
+      return "Nothing was sent. The person did not confirm. Do not claim it was sent and do not retry on your own.";
     case "declined":
       return "You declined it. Nothing was sent. Do not call computer again for this action.";
     case "approval_lost":
@@ -417,6 +478,8 @@ export function resultStatusLabel(status: string): string {
   switch (status) {
     case "done": return "Done";
     case "approval_required": return "Waiting for you";
+    case "confirmation_needed": return "Confirmation needed; nothing sent";
+    case "not_confirmed": return "Not confirmed; nothing sent";
     case "declined": return "Declined; nothing sent";
     case "approval_lost": return "Approval lost; nothing sent";
     case "approval_expired": return "Approval expired; nothing sent";
@@ -434,18 +497,20 @@ export function resultStatusLabel(status: string): string {
 }
 
 export function shouldSpendToken(status: string): boolean {
-  return status !== "session_locked";
+  return status !== "session_locked"
+    && status !== "confirmation_needed"
+    && status !== "not_confirmed";
 }
 
 export function statusPayload(
-  status: "approval_lost" | "approval_expired" | "declined" | "session_locked" | "delivery_unknown" | "done" | "provider_not_qualified",
+  status: string,
   message: string,
   extras: Json = {},
 ): Json {
   return {
     ok: true,
     value: stripSecrets({ status, message, root_preserved: true, ...extras }) as Json,
-    agent_hint: agentHintFor(status),
+    agent_hint: agentHintFor(status === "done" && extras.verified === false ? "done_unverified" : status),
   };
 }
 
@@ -460,7 +525,12 @@ export type MappedResume = {
   message: string;
   evidence?: unknown;
   spend: boolean;
+  verified?: boolean;
+  hintStatus?: string;
 };
+
+const CLOSED_WITHOUT_REPLY = /The wrangle session closed without replying/i;
+const NO_WRANGLE_SESSION = /No wrangle session/i;
 
 /** Map a parked-session CLI reply (or process failure) to an agent-facing outcome. */
 export function mapResumeOutcome(input: {
@@ -468,9 +538,23 @@ export function mapResumeOutcome(input: {
   stdout: string;
   stderr: string;
   reply?: Json | null;
+  app?: string;
+  aborted?: boolean;
+  timedOut?: boolean;
 }): MappedResume {
   const combined = `${input.stdout}\n${input.stderr}`;
-  if (input.code === 5 && /No wrangle session/i.test(combined)) {
+
+  // Mid-call loss or exec abort/timeout during approve/decline → delivery_unknown.
+  if (input.aborted || input.timedOut || CLOSED_WITHOUT_REPLY.test(combined)) {
+    return {
+      status: "delivery_unknown",
+      message: "The action may or may not have happened and was not retried.",
+      spend: true,
+    };
+  }
+
+  // Exit 5 before a parked child exists.
+  if (input.code === 5 && NO_WRANGLE_SESSION.test(combined)) {
     return {
       status: "approval_expired",
       message: "Nothing was sent. The approval window expired.",
@@ -495,21 +579,36 @@ export function mapResumeOutcome(input: {
   }
 
   if (reply.ok === false) {
-    if (String(reply.class ?? "") === "DeliveryUnknown" || /DeliveryUnknown/i.test(String(reply.error ?? ""))) {
+    const klass = String(reply.class ?? "");
+    const error = String(reply.error ?? "");
+    if (klass === "DeliveryUnknown" || /DeliveryUnknown/i.test(error)) {
       return {
         status: "delivery_unknown",
         message: "The action may or may not have happened and was not retried.",
         spend: true,
       };
     }
-    if (/No wrangle session/i.test(String(reply.error ?? ""))) {
+    if (klass === "DriverRefusal" && reply.terminal === true) {
+      return {
+        status: "delivery_unknown",
+        message: "The action may or may not have happened and was not retried.",
+        spend: true,
+      };
+    }
+    if (CLOSED_WITHOUT_REPLY.test(error)) {
+      return {
+        status: "delivery_unknown",
+        message: "The action may or may not have happened and was not retried.",
+        spend: true,
+      };
+    }
+    if (NO_WRANGLE_SESSION.test(error)) {
       return {
         status: "approval_expired",
         message: "Nothing was sent. The approval window expired.",
         spend: true,
       };
     }
-    // Unknown failure with ok:false before a durable send: treat as nothing confirmed sent.
     return {
       status: "approval_lost",
       message: "Nothing was sent. Resume is unavailable.",
@@ -559,15 +658,28 @@ export function mapResumeOutcome(input: {
       };
     }
     if (receipt.dispatch === "delivered") {
+      const unverified = receipt.effect === "unverified"
+        || (typeof receipt.verification_error === "string" && receipt.verification_error.length > 0);
+      if (unverified) {
+        const app = input.app ? ` in ${input.app}` : "";
+        return {
+          status: "done",
+          message: `Sent, but Wrangle couldn't verify the result${app}.`,
+          evidence: value.evidence,
+          spend: true,
+          verified: false,
+          hintStatus: "done_unverified",
+        };
+      }
       return {
         status: "done",
         message: "The requested result is visible in the application.",
         evidence: value.evidence,
         spend: true,
+        verified: true,
       };
     }
     if (receipt.dispatch === "not_delivered") {
-      // Spent proposal / post-marker lock: nothing to retry.
       return {
         status: "approval_lost",
         message: "Nothing was sent. Resume is unavailable.",
@@ -590,7 +702,6 @@ export function mapResumeOutcome(input: {
     }
   }
 
-  // Unrecognized success shape after an approve/decline call: fail closed without claiming delivery.
   return {
     status: "delivery_unknown",
     message: "The action may or may not have happened and was not retried.",
@@ -606,4 +717,14 @@ export function agentValueFromMapped(mapped: MappedResume): Json {
   };
   if (mapped.evidence != null) value.evidence = stripSecrets(mapped.evidence);
   return value;
+}
+
+export function agentOutputFromMapped(mapped: MappedResume): Json {
+  const value = agentValueFromMapped(mapped);
+  const hintStatus = mapped.hintStatus ?? mapped.status;
+  return {
+    ok: true,
+    value,
+    agent_hint: agentHintFor(hintStatus),
+  };
 }

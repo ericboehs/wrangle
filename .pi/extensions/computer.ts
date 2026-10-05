@@ -1,11 +1,14 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 import {
   agentHintFor,
+  agentOutputFromMapped,
   agentValueFromMapped,
   classifyParams,
+  decodeResumeToken,
+  gateSendApproval,
   lookupPending,
   mapResumeOutcome,
   markTokenSpent,
@@ -150,8 +153,17 @@ async function runStart(pi: ExtensionAPI, params: StartParams, signal: AbortSign
   return handleStartValue(reply.value as Json, { app: params.app });
 }
 
-async function runResume(pi: ExtensionAPI, params: ResumeParams, signal: AbortSignal | undefined, onUpdate: any) {
+async function runResume(
+  pi: ExtensionAPI,
+  params: ResumeParams,
+  signal: AbortSignal | undefined,
+  onUpdate: any,
+  ctx: ExtensionContext,
+) {
   const pending = lookupPending(params.resume_token);
+  const decoded = decodeResumeToken(params.resume_token);
+  const pendingText = pending?.pending_text
+    ?? (decoded.ok ? decoded.binding.pending_text : undefined);
   const label = pending?.label ? ` (${pending.label})` : "";
   const appBit = pending?.app ? ` in ${pending.app}` : "";
   onUpdate?.({
@@ -170,23 +182,57 @@ async function runResume(pi: ExtensionAPI, params: ResumeParams, signal: AbortSi
     };
   }
 
-  const process = await pi.exec("wrangle", plan.argv, { signal, timeout: 300_000 });
+  // decision "send" requires a true tool-row confirm showing the exact pending_text.
+  if (plan.decision === "send") {
+    const gate = await gateSendApproval({
+      pendingText,
+      hasUI: Boolean(ctx?.hasUI),
+      ui: ctx?.ui,
+    });
+    if (gate.action === "blocked") {
+      const payload = statusPayload(gate.status, gate.message);
+      return {
+        content: [{ type: "text", text: JSON.stringify(payload) }],
+        details: payload,
+      };
+    }
+  }
+
+  let process: { code?: number | null; stdout: string; stderr: string };
+  let aborted = false;
+  let timedOut = false;
+  try {
+    process = await pi.exec("wrangle", plan.argv, { signal, timeout: 300_000 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    aborted = Boolean(signal?.aborted) || /abort/i.test(message);
+    timedOut = /timed?\s*out|timeout/i.test(message);
+    process = { code: 1, stdout: "", stderr: message };
+  }
+
   const reply = tryParseJson(process.stdout.trim()) ?? tryParseJson(process.stderr.trim());
   const mapped = mapResumeOutcome({
     code: process.code ?? 1,
     stdout: process.stdout,
     stderr: process.stderr,
     reply,
+    app: pending?.app,
+    aborted,
+    timedOut,
   });
 
   if (mapped.spend) markTokenSpent(plan.token);
 
-  const agentValue = agentValueFromMapped(mapped);
-  return agentOutput(agentValue, {
-    app: pending?.app,
-    pending_label: pending?.label,
-    pending_text: pending?.pending_text,
-  });
+  const output = agentOutputFromMapped(mapped);
+  return {
+    content: [{ type: "text", text: JSON.stringify({ ok: true, value: output.value, agent_hint: output.agent_hint }) }],
+    details: {
+      ...output,
+      app: pending?.app,
+      // pending_text stays in details only for person-facing render; strip from agent content above.
+      pending_text: pendingText,
+    },
+  };
 }
 
 export default function computer(pi: ExtensionAPI) {
@@ -209,7 +255,7 @@ export default function computer(pi: ExtensionAPI) {
     parameters: Parameters,
     executionMode: "sequential",
 
-    async execute(_toolCallId, params: Params, signal, onUpdate) {
+    async execute(_toolCallId, params: Params, signal, onUpdate, ctx: ExtensionContext) {
       const kind = classifyParams(params);
       if (kind === "invalid_mixed") {
         const payload = statusPayload(
@@ -222,7 +268,7 @@ export default function computer(pi: ExtensionAPI) {
         };
       }
       if (kind === "resume") {
-        return runResume(pi, params as ResumeParams, signal, onUpdate);
+        return runResume(pi, params as ResumeParams, signal, onUpdate, ctx);
       }
       if (kind === "start") {
         return runStart(pi, params as StartParams, signal, onUpdate);
@@ -263,13 +309,9 @@ export default function computer(pi: ExtensionAPI) {
       if (value.status === "approval_required") {
         const app = details.app ?? value.app ?? "the app";
         const lines = [`Waiting for you in ${app}`];
-        // PR #5 has no pending_text; show the pending_action label only (never invent exact text).
+        // Exact pending_text only — never invent or fall back to a label.
         if (typeof details.pending_text === "string" && details.pending_text.length > 0) {
           lines.push(details.pending_text);
-        } else if (typeof details.pending_label === "string" && details.pending_label.length > 0) {
-          lines.push(details.pending_label);
-        } else if (typeof value.pending_action?.label === "string") {
-          lines.push(value.pending_action.label);
         }
         lines.push("Nothing has been sent.");
         return new Text(theme.fg("warning", lines.join("\n")), 0, 0);

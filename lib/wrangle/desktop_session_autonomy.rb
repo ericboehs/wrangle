@@ -4,6 +4,7 @@ require "json"
 require "securerandom"
 
 require_relative "desktop_autonomy"
+require_relative "desktop_decider"
 require_relative "desktop_observation"
 require_relative "skill_run"
 
@@ -238,7 +239,7 @@ module Wrangle
       result = {
         "schema" => "wrangle.task.v1", "status" => status, "app" => @scope.app,
         "actions_taken" => @actions, "remaining" => remaining, "root_preserved" => true,
-        "message" => task_message(status), "decision" => task_decision(assessment),
+        "message" => task_message(status), "decider" => task_decider(assessment),
         "pending_action" => pending, "actions" => actions, "evidence" => task_evidence(status)
       }.compact
       @log&.record(
@@ -248,7 +249,9 @@ module Wrangle
       result
     end
 
-    def task_decision(assessment)
+    # Provenance of the typed choice. Named `decider`, not `decision`, so it cannot be confused with
+    # the computer tool's own `decision` (approve/decline) parameter.
+    def task_decider(assessment)
       choice = assessment.choice
       { "operation" => choice.operation, "confidence" => choice.confidence,
         "provider" => choice.provider, "model" => choice.model }
@@ -314,9 +317,7 @@ module Wrangle
       end
     end
 
-    def quoted_task_spans(goal)
-      goal.scan(/"([^"]+)"|'([^']+)'/).map { |double, single| double || single }.uniq
-    end
+    def quoted_task_spans(goal) = DesktopDecider.quoted_spans(goal)
 
     def task_message(status)
       {

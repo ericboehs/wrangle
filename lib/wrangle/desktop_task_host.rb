@@ -28,12 +28,11 @@ module Wrangle
       raise ArgumentError, "A session named #{session.inspect} is already running" if
         SessionClient.new(socket).running?
 
-      log = File.join(File.dirname(socket), "#{session}.log")
-      FileUtils.mkdir_p(File.dirname(socket))
+      log = private_log(socket, session)
       reader, writer = IO.pipe
       pid = Process.spawn(
         RbConfig.ruby, exe, "__task_park", socket, JSON.generate(arguments.slice(*TASK_KEYS)),
-        writer.fileno.to_s, writer => writer, out: log, err: log, pgroup: true
+        writer.fileno.to_s, writer => writer, out: [log, "a", 0o600], err: [log, "a", 0o600], pgroup: true
       )
       writer.close
       Process.detach(pid)
@@ -44,6 +43,16 @@ module Wrangle
     ensure
       reader&.close
       writer&.close unless writer.nil? || writer.closed?
+    end
+
+    # The session directory is owner-only, and so is the child's output log.
+    def private_log(socket, session)
+      directory = File.dirname(socket)
+      FileUtils.mkdir_p(directory, mode: 0o700)
+      File.chmod(0o700, directory) if File.owned?(directory)
+      log = File.join(directory, "#{session}.log")
+      File.open(log, File::WRONLY | File::CREAT | File::APPEND, 0o600) { |file| file.chmod(0o600) }
+      log
     end
 
     # Child side. Writes exactly one JSON reply line to `fd`, then serves a parked approval if any.

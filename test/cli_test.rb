@@ -178,6 +178,11 @@ class CliTest < Minitest::Test
       refute_includes out, "resume_token"
       socket = File.join(env.fetch("WRANGLE_HOME"), "#{binding.fetch("session")}.sock")
       assert File.socket?(socket), "the parked child serves the session socket"
+      assert_equal 0o600, File.stat(socket).mode & 0o777
+      assert_equal 0o700, File.stat(File.dirname(socket)).mode & 0o777
+      child_log = File.join(env.fetch("WRANGLE_HOME"), "#{binding.fetch("session")}.log")
+      assert_equal 0o600, File.stat(child_log).mode & 0o777
+      refute value.key?("decision")
       refute_empty Dir.glob(File.join(env.fetch("WRANGLE_HOME"), "scopes", "*.json"))
 
       args = ["--session", binding["session"], "--proposal-id", binding["proposal_id"],
@@ -195,6 +200,13 @@ class CliTest < Minitest::Test
       sleep 0.05 while File.exist?(socket) && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
       refute File.exist?(socket), "the parked child exits once the approval resolves"
       assert_empty Dir.glob(File.join(env.fetch("WRANGLE_HOME"), "scopes", "*.json"))
+
+      # The tool maps this exit 5 to approval_expired.
+      out, status = run_cli("approve", *args, env:)
+      assert_equal 5, status, out
+      assert_match(/No wrangle session/, out)
+      logs = Dir.glob(File.join(env.fetch("WRANGLE_HOME"), "logs", "*.jsonl")).map { |path| File.read(path) }.join
+      refute_includes logs, binding["proposal_id"]
     end
   end
 

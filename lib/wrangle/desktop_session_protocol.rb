@@ -1,15 +1,38 @@
 # frozen_string_literal: true
 
+require "fileutils"
 require "json"
+require "socket"
 
 module Wrangle
   # Socket accept loop and JSON dispatch for one desktop session.
   module DesktopSessionProtocol
+    SOCKET_MODE = 0o600
+    SOCKET_DIRECTORY_MODE = 0o700
+
     private
+
+    # Binds the session socket owner-only. The directory is forced to 0700 when this user owns it and
+    # the socket is created under a 0177 umask, so there is no window in which another uid can connect.
+    # File modes do not separate processes of the same uid: any of them can still connect.
+    def bind_private_socket(path)
+      directory = File.dirname(path)
+      FileUtils.mkdir_p(directory, mode: SOCKET_DIRECTORY_MODE)
+      File.chmod(SOCKET_DIRECTORY_MODE, directory) if File.owned?(directory)
+      FileUtils.rm_f(path)
+      previous = File.umask(0o177)
+      begin
+        listener = UNIXServer.new(path)
+      ensure
+        File.umask(previous)
+      end
+      File.chmod(SOCKET_MODE, path)
+      listener
+    end
 
     def serve(server, deadline: nil)
       @serving = true
-      File.chmod(0o600, @socket_path)
+      File.chmod(SOCKET_MODE, @socket_path)
       loop do
         break if deadline && !socket_ready?(server, deadline)
 

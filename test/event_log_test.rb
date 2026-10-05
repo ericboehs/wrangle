@@ -25,6 +25,23 @@ class EventLogTest < Minitest::Test
     refute_match(%r{unsafe/session}, log.path)
   end
 
+  def test_binding_fields_are_salted_truncated_hashes
+    log = Wrangle::EventLog.new(session: "redaction", root: @directory)
+    log.record("preview", "proposal_id" => "p-raw-123", "scope_id" => "s-raw-456", "revision" => "r-raw-789",
+                          "operation" => "PRESS")
+    log.record("execute", "proposal_id" => "p-raw-123", "before_revision" => "r-raw-789",
+                          "after_revision" => "r-raw-abc", "dispatch" => "delivered")
+
+    text = File.read(log.path)
+    %w[p-raw-123 s-raw-456 r-raw-789 r-raw-abc].each { |raw| refute_includes text, raw }
+    preview, execute = text.lines.map { |line| JSON.parse(line) }
+    assert_match(/\Ah:[0-9a-f]{16}\z/, preview["proposal_id"])
+    assert_equal preview["proposal_id"], execute["proposal_id"]
+    assert_equal preview["revision"], execute["before_revision"]
+    assert_equal "PRESS", preview["operation"]
+    refute_equal Digest::SHA256.hexdigest("p-raw-123")[0, 16], preview["proposal_id"].delete_prefix("h:")
+  end
+
   def test_prunes_unpinned_files_older_than_seven_days
     old = File.join(@directory, "old.jsonl")
     recent = File.join(@directory, "recent.jsonl")

@@ -23,6 +23,18 @@ class DesktopBoundApprovalTest < Minitest::Test
     end
   end
 
+  # A policy under which typing is itself consequential, so a parked proposal carries text.
+  class TextIsConsequential < Wrangle::DesktopPolicy
+    def assess(scope:, candidate:, operation:)
+      return super unless operation == "SET_TEXT"
+
+      Assessment.new(classification: "consequential", consequential: true, permitted: true,
+                     reason: "fixture: typing is consequential")
+    end
+  end
+
+  SessionClient = Wrangle::SessionClient
+
   def setup
     @directory = Dir.mktmpdir("wrangle-bound-approval")
     @socket = File.join(@directory, "task-fixture.sock")
@@ -482,12 +494,188 @@ class DesktopBoundApprovalTest < Minitest::Test
     assert status(server)["poisoned"]
   end
 
-  def test_non_stale_driver_refusal_during_observation_propagates
+  def test_driver_refusal_before_the_marker_is_not_delivered_and_resolves
     server, result = parked_task
-    @driver.observations = [Wrangle::DriverRefusal.new("TIMEOUT", "slow", delivery: "not_delivered")]
+    @driver.observations = [Wrangle::DriverRefusal.new("TIMEOUT", "slow", delivery: "unknown")]
+
+    value = call(server, approve_request(result)).fetch("value")
+    receipt = value.fetch("receipt")
+    assert_equal "not_delivered", receipt["dispatch"]
+    assert_equal "TIMEOUT", receipt["reason"]
+    assert_nil @driver.executed
+    assert_nil @registry.dispatch_started, "no durable marker was written"
+    refute status(server)["poisoned"]
+    refute_nil @registry.released
+    assert @driver.closed
+    assert_equal "consumed", call(server, approve_request(result)).dig("value", "reason")
+  end
+
+  def test_driver_refusal_after_the_marker_without_not_delivered_is_delivery_unknown
+    [Wrangle::DriverRefusal.new("TIMEOUT", "helper timed out", delivery: "unknown"),
+     Wrangle::DriverRefusal.new("HELPER", "no delivery claim")].each do |failure|
+      fresh_fixture
+      server, result = parked_task
+      @driver.execute_failure = failure
+
+      reply = call(server, approve_request(result))
+      refute reply["ok"]
+      assert_equal "DeliveryUnknown", reply["class"], failure.code
+      assert reply["terminal"]
+      assert status(server)["poisoned"]
+      refute_nil @registry.dispatch_started
+      assert_nil @registry.dispatch_finished, "the marker stays unresolved so no session retries it"
+      refute_nil @registry.released, "the parked session still resolves and releases"
+      assert_equal "consumed", call(server, approve_request(result)).dig("value", "reason")
+    end
+  end
+
+  def test_other_failures_after_a_matching_binding_resolve_the_parked_session
+    server, result = parked_task
+    @driver.observations = [Wrangle::DriverUnavailable.new("helper gone")]
+
     reply = call(server, approve_request(result))
-    assert_equal "DriverRefusal", reply["class"]
-    assert_equal 1, status(server)["pending_proposals"]
+    assert_equal "DriverUnavailable", reply["class"]
+    refute_nil @registry.released
+    assert @driver.closed
+    assert_equal "consumed", call(server, approve_request(result)).dig("value", "reason")
+  end
+
+  def test_binding_carries_tool_only_pending_text_exactly_as_typed
+    @driver.observations = [@driver.state("one", "Message", role: "text field", operations: ["SET_TEXT"])]
+    server = seam(provider: FakeProvider.new(["a1", 0.9]), policy: TextIsConsequential.new)
+    goal = %(Post "ship it, 'today'  now" in Message)
+    result = server.run_task("goal" => goal)
+
+    assert_equal "approval_required", result["status"]
+    pending_text = result.dig("binding", "pending_text")
+    assert_equal Wrangle::DesktopDecider.quoted_spans(goal).first, pending_text
+    assert_equal({ "source" => "goal:1", "characters" => pending_text.length }, result.dig("pending_action", "text"))
+    refute_includes JSON.generate(result.except("binding")), pending_text
+
+    call(server, approve_request(result))
+    assert_equal pending_text, @driver.executed[:text]
+    assert_equal "SET_TEXT", @driver.executed[:operation]
+  end
+
+  def test_task_result_names_choice_provenance_decider_not_decision
+    _server, result = parked_task
+
+    refute result.key?("decision"), "decision is the computer tool's approve/decline parameter"
+    assert_equal({ "operation" => "PRESS", "confidence" => 0.9, "provider" => "fixture", "model" => "recorded-v1" },
+                 result["decider"])
+  end
+
+  def test_event_log_never_records_raw_binding_values
+    Dir.mktmpdir("wrangle-log") do |root|
+      log = Wrangle::EventLog.new(session: "task-redaction", root:)
+      @log = log
+      @driver.observations = [@driver.state("rev-3c1f9e77d2", "Send")]
+      server, result = parked_task
+      call(server, { "op" => "approve", "proposal_id" => "guess", "scope_id" => "x", "revision" => "y",
+                     "approve" => true })
+      @driver.observations = [@driver.state("rev-3c1f9e77d2", "Send"), @driver.state("rev-after-8a2b", "Send")]
+      assert_equal "delivered", call(server, approve_request(result)).dig("value", "receipt", "dispatch")
+
+      text = File.read(log.path)
+      binding = result.fetch("binding")
+      [binding["proposal_id"], binding["scope_id"], binding["revision"], "rev-after-8a2b"].each do |raw|
+        refute_includes text, raw
+      end
+      events = text.lines.map { |line| JSON.parse(line) }
+      hashed = events.flat_map { |event| event.values_at(*Wrangle::EventLog::BINDING_KEYS) }.compact
+      refute_empty hashed
+      assert(hashed.all? { |value| value.match?(/\Ah:[0-9a-f]{16}\z/) })
+      preview = events.find { |event| event["event"] == "preview" }
+      execute = events.find { |event| event["event"] == "execute" }
+      assert_equal preview["proposal_id"], execute["proposal_id"], "hashes still correlate within one process"
+    end
+  end
+
+  def test_parked_socket_and_directory_are_owner_only
+    File.chmod(0o755, @directory)
+    server, result = parked_task(socket: @socket)
+    ready = Queue.new
+    @thread = Thread.new { server.serve_parked_approval(ready: -> { ready << true }) }
+    @thread.report_on_exception = false
+    ready.pop
+
+    assert_equal 0o600, File.stat(@socket).mode & 0o777
+    assert_equal 0o700, File.stat(@directory).mode & 0o777
+    assert_equal 0o600, File.stat("#{@socket}.pid").mode & 0o777
+    Wrangle::SessionClient.new(@socket).call("decline", **symbolize(decline_request(result).except("op")))
+    assert @thread.join(2)
+  end
+
+  # Every terminal outcome spends the approval, releases the lease, and ends the parked serve loop
+  # (in the real path, the child process exits with it).
+  # rubocop:disable-next Metrics/MethodLength
+  def test_parked_session_exits_promptly_on_every_terminal_outcome
+    paths = {
+      "delivered" => [->(_server, _result) {}, ->(result) { approve_request(result) }],
+      "declined" => [->(_server, _result) {}, ->(result) { decline_request(result) }],
+      "not_delivered after marker" => [
+        ->(_s, _r) { @driver.dispatch_result = { "dispatch" => "not_delivered", "code" => "session_locked" } },
+        ->(result) { approve_request(result) }
+      ],
+      "stale_target" => [->(_s, _r) { @driver.observations = [@driver.state("two", "Send")] },
+                         ->(result) { approve_request(result) }],
+      "lost_scope" => [->(_s, _r) { @driver.observations = [Wrangle::ScopeLost.new("gone")] },
+                       ->(result) { approve_request(result) }],
+      "expired" => [->(server, result) { age(server, result, Wrangle::DesktopProposal::TTL + 1) },
+                    ->(result) { approve_request(result) }],
+      "refusal before marker" => [
+        ->(_s, _r) { @driver.observations = [Wrangle::DriverRefusal.new("TIMEOUT", "slow")] },
+        ->(result) { approve_request(result) }
+      ],
+      "refusal after marker" => [
+        ->(_s, _r) { @driver.execute_failure = Wrangle::DriverRefusal.new("TIMEOUT", "slow", delivery: "unknown") },
+        ->(result) { approve_request(result) }
+      ],
+      "delivery unknown" => [->(_s, _r) { @driver.execute_failure = Wrangle::DeliveryUnknown.new("maybe") },
+                             ->(result) { approve_request(result) }],
+      "interrupted" => [->(_s, _r) { @driver.execute_failure = RuntimeError.new("boom") },
+                        ->(result) { approve_request(result) }]
+    }
+    paths.each do |name, (arrange, request)|
+      fresh_fixture
+      server, result = parked_task(socket: @socket)
+      thread = serve_in_thread(server)
+      arrange.call(server, result)
+      bound_call(SessionClient.new(@socket), request.call(result))
+
+      assert thread.join(2), "#{name}: the parked session exits"
+      refute File.exist?(@socket), name
+      refute_nil @registry.released, name
+      assert @driver.closed, name
+    end
+  end
+
+  def test_unqualified_provider_resolution_ends_the_parked_session
+    server, result = parked_task(socket: @socket, provider: FakeProvider.new(["a1", 0.9], qualified: false))
+    thread = serve_in_thread(server)
+    bound_call(SessionClient.new(@socket), approve_request(result))
+
+    assert thread.join(2)
+    refute_nil @registry.released
+  end
+
+  def test_non_terminal_requests_keep_the_parked_session_and_its_binding
+    server, result = parked_task(socket: @socket)
+    @thread = serve_in_thread(server)
+    client = SessionClient.new(@socket)
+    @driver.locked = true
+    assert_equal "session_locked", bound_call(client, approve_request(result)).dig("value", "status")
+    @driver.locked = false
+    [approve_request(result).merge("proposal_id" => "guess"), approve_request(result).merge("revision" => "two"),
+     approve_request(result).merge("scope_id" => "scope-2"), approve_request(result).merge("approve" => false),
+     approve_request(result).merge("text" => "rewrite"), decline_request(result).merge("approve" => true)]
+      .each { |request| bound_call(client, request) }
+
+    refute @thread.join(0.2), "the real approval is still pending"
+    assert_nil @registry.released
+    assert_equal 1, client.call("status").dig("value", "pending_proposals")
+    assert_equal "delivered", bound_call(client, approve_request(result)).dig("value", "receipt", "dispatch")
+    assert @thread.join(2)
   end
 
   def test_doctor_errors_are_treated_as_unlocked
@@ -554,12 +742,28 @@ class DesktopBoundApprovalTest < Minitest::Test
 
   private
 
-  def seam(socket: nil, provider: nil)
+  def seam(socket: nil, provider: nil, policy: Wrangle::DesktopPolicy.new)
     Wrangle::DesktopSessionServer.new(
       socket, {}, driver: @driver, scope: DesktopSessionServerTest.scope, registry: @registry,
-                  log: @log, provider:
+                  log: @log, provider:, policy:
     )
   end
+
+  def fresh_fixture
+    @driver = LockableDriver.new
+    @driver.observations = [@driver.state("one", "Send")]
+    @registry = FakeRegistry.new
+  end
+
+  def serve_in_thread(server)
+    ready = Queue.new
+    thread = Thread.new { server.serve_parked_approval(ready: -> { ready << true }) }
+    thread.report_on_exception = false
+    ready.pop
+    thread
+  end
+
+  def bound_call(client, request) = client.call(request.fetch("op"), **symbolize(request.except("op")))
 
   def parked_task(provider: FakeProvider.new(["a1", 0.9]), socket: nil)
     server = seam(socket:, provider:)

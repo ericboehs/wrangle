@@ -8,8 +8,22 @@ require_relative "errors"
 
 module Wrangle
   # Bound approve/decline for one consequential proposal parked in a live desktop session.
-  # The agent never sees proposal_id, scope_id, or revision; the tool strips them. Receipts stay
-  # tool-facing. This path must not continue the task decision loop after a single delivery.
+  # The agent never sees proposal_id, scope_id, revision, or pending_text; the tool strips them.
+  # Receipts stay tool-facing. This path must not continue the task decision loop after a delivery.
+  #
+  # Terminal outcomes (the approval is spent, the lease released, and a parked task process exits):
+  # delivered or any other receipt, declined, provider_not_qualified, stale_target, lost_scope,
+  # expired, a driver refusal before the durable marker (not_delivered), DeliveryUnknown after it,
+  # and any other failure once a matching binding has been accepted.
+  #
+  # Non-terminal outcomes keep the same binding live until the TTL:
+  # - session_locked: retryable by contract; the person can unlock and approve again.
+  # - unknown, or an echoed scope_id/revision that does not match: a request that does not hold the
+  #   binding must never be able to spend (or kill) the real pending approval by guessing.
+  # - request refusals (approve not literal true, rewrite fields, approve on decline): these are
+  #   rejected before the binding is consulted, carry no authority, and only arise from a malformed
+  #   client. Spending on them would turn a client bug into a lost approval the person gave; the tool
+  #   can retry at once with the same binding, and the TTL still bounds how long the lease is held.
   # rubocop:disable-next Metrics/ModuleLength
   module DesktopBoundApproval
     FORBIDDEN_APPROVE_FIELDS = %w[operation ref text label candidate].freeze
@@ -21,9 +35,7 @@ module Wrangle
     def serve_parked_approval(ready: nil)
       raise ArgumentError, "No parked approval to serve" unless @parked_approval && @socket_path
 
-      FileUtils.mkdir_p(File.dirname(@socket_path))
-      FileUtils.rm_f(@socket_path)
-      listener = UNIXServer.new(@socket_path)
+      listener = bind_private_socket(@socket_path)
       File.write("#{@socket_path}.pid", "#{Process.pid}\n", mode: "w", perm: 0o600)
       ready&.call
       serve(listener, deadline: parked_deadline)
@@ -44,7 +56,13 @@ module Wrangle
       outcome = resolve_approval_request(request)
       return outcome if outcome
 
-      deliver_bound_approval(@proposals.fetch(request["proposal_id"]))
+      proposal = @proposals.fetch(request["proposal_id"])
+      resolving_on_failure(proposal) do
+        accepted = accept_bound!(proposal, request)
+        next accepted if accepted
+
+        deliver_bound_approval(proposal)
+      end
     end
 
     def decline(request)
@@ -54,10 +72,27 @@ module Wrangle
       outcome = resolve_approval_request(request)
       return outcome if outcome
 
-      proposal = @proposals.delete(request["proposal_id"])
-      tombstone!(request["proposal_id"], "declined")
+      proposal = @proposals.fetch(request["proposal_id"])
+      resolving_on_failure(proposal) do
+        accepted = accept_bound!(proposal, request)
+        next accepted if accepted
+
+        @proposals.delete(proposal["id"])
+        tombstone!(proposal["id"], "declined")
+        finish_parked_resolution!
+        receipt(proposal, "refused", "not_applicable", "declined").merge("approval" => "spent")
+      end
+    end
+
+    # Once a request has proved it holds the binding, no failure may leave the approval half alive:
+    # the proposal is spent and the parked session resolves before the error is reported.
+    def resolving_on_failure(proposal)
+      yield
+    rescue StandardError
+      @proposals.delete(proposal["id"])
+      tombstone!(proposal["id"], "failed") unless @consumed[proposal["id"]]
       finish_parked_resolution!
-      receipt(proposal, "refused", "not_applicable", "declined").merge("approval" => "spent")
+      raise
     end
 
     def refuse_rewrite_fields!(request)
@@ -67,8 +102,9 @@ module Wrangle
       raise ArgumentError, "Bound approval cannot rewrite #{found.join(", ")}; the stored action is fixed"
     end
 
-    # Shared lookup for approve and decline. Returns an approval.v1 outcome, or nil when the
-    # stored proposal is still live and the echoed binding matches.
+    # Shared lookup for approve and decline. Returns an approval.v1 outcome for a request that does
+    # not hold the binding (never spends), or nil when the stored proposal is live and the echoed
+    # binding matches.
     def resolve_approval_request(request)
       id = request["proposal_id"]
       return approval_outcome("approval_lost", "unknown", false, request) if id.nil? || id.to_s.empty?
@@ -79,14 +115,20 @@ module Wrangle
       unless request["scope_id"] == proposal["scope_id"] && request["revision"] == proposal["revision"]
         return approval_outcome("approval_lost", "unknown", false, request)
       end
-      return lose_scope!(proposal, request) unless proposal["scope_id"] == @scope.id
-      return lose_scope!(proposal, request) if @poisoned.is_a?(ScopeLost)
-
-      ensure_usable!
+      # An ordinary previewed proposal in an interactive session is not this path's to spend.
       unless proposal.dig("policy", "consequential") && proposal.dig("policy", "permitted")
         raise ArgumentError, "Proposal is not awaiting bound approval"
       end
 
+      nil
+    end
+
+    # Checks that run only for a request that holds the binding. Every outcome here is terminal.
+    def accept_bound!(proposal, request)
+      return lose_scope!(proposal, request) unless proposal["scope_id"] == @scope.id
+      return lose_scope!(proposal, request) if @poisoned.is_a?(ScopeLost)
+
+      ensure_usable!
       expire_bound(proposal, request)
     end
 
@@ -99,7 +141,7 @@ module Wrangle
       return locked if locked
 
       fresh = observe_for_approval(proposal)
-      return fresh if approval_result?(fresh)
+      return fresh if approval_result?(fresh) || fresh.key?("receipt")
 
       candidate = approval_revalidate(proposal, fresh)
       return candidate if approval_result?(candidate)
@@ -123,8 +165,18 @@ module Wrangle
       elsif stale_ref_refusal?(e)
         spend_stale!(proposal, binding_fields(proposal))
       else
-        raise
+        refuse_before_marker!(proposal, e)
       end
+    end
+
+    # No durable marker exists yet, so nothing can have been sent: report not_delivered, spend the
+    # approval, and resolve without poisoning.
+    def refuse_before_marker!(proposal, error)
+      @proposals.delete(proposal["id"])
+      tombstone!(proposal["id"], "not_delivered")
+      value = receipt(proposal, "not_delivered", "not_applicable", error.code)
+      finish_parked_resolution!
+      { "receipt" => value, "evidence" => bound_approval_evidence }.compact
     end
 
     def approval_revalidate(proposal, fresh)
@@ -156,7 +208,9 @@ module Wrangle
 
       finish_observed_delivery(proposal, fresh, dispatch, delivery)
     rescue DriverRefusal => e
-      raise unless e.delivery == "not_delivered"
+      # Only a helper that states the action was not delivered may finish the marker. Any other
+      # refusal after the marker leaves delivery unknown: poison and keep the marker unresolved.
+      unknown_after_marker!(e) unless e.delivery == "not_delivered"
 
       @registry.finish_dispatch(dispatch)
       receipt(proposal, "not_delivered", "not_applicable", e.code, durable: true)
@@ -164,8 +218,12 @@ module Wrangle
       @poisoned ||= e
       raise
     rescue StandardError => e
+      unknown_after_marker!(e)
+    end
+
+    def unknown_after_marker!(cause)
       @poisoned ||= DeliveryUnknown.new("Desktop action delivery was interrupted after durable dispatch began")
-      raise @poisoned, cause: e
+      raise @poisoned, cause:
     end
 
     def session_locked_outcome(proposal)
@@ -231,8 +289,6 @@ module Wrangle
 
       @parked_approval = false
       @approval_resolved = true
-      @registry&.release(@lease)
-      @lease = nil
       shutdown unless @serving
     end
 
@@ -289,7 +345,10 @@ module Wrangle
         "scope_id" => proposal["scope_id"],
         "revision" => proposal["revision"],
         "ttl_seconds" => DesktopProposal::TTL,
-        "session" => parked_session_name
+        "session" => parked_session_name,
+        # Tool-only: the exact string the driver will type (the stored proposal text, chosen from the
+        # literals or DesktopDecider.quoted_spans). pending_action keeps only source and characters.
+        "pending_text" => proposal["text"]
       }.compact
     end
 

@@ -394,7 +394,7 @@ class DesktopSessionServerTest < Minitest::Test
       :autonomous_task, "goal" => "Confirm it", "min_confidence" => 0.8
     )
     assert_equal "low_confidence", terminal_low["status"]
-    assert_equal "DONE", terminal_low.dig("decision", "operation")
+    assert_equal "DONE", terminal_low.dig("decider", "operation")
     assert_nil @driver.executed
 
     @driver = FakeDriver.new

@@ -58,10 +58,9 @@ module Wrangle
     end
 
     def run
-      FileUtils.mkdir_p(File.dirname(@socket_path))
       FileUtils.rm_f(@socket_path)
       start_runtime(log_session: File.basename(@socket_path, ".sock"))
-      serve(UNIXServer.new(@socket_path))
+      serve(bind_private_socket(@socket_path))
     ensure
       shutdown
     end

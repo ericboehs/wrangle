@@ -255,10 +255,48 @@ ask naturally:
 The agent calls `computer` once with only the natural goal and application name. Wrangle performs
 window selection, progressive observation, typed decisions, proposals, dispatch, verification, and
 cleanup internally; users and the outer agent never handle window IDs, refs, proposal IDs, revisions,
-or receipt vocabulary. Consequential actions stop before delivery; this first protocol reports the
-pending action but cannot yet resume its bound approval. Every result releases Wrangle's exclusive
-lease and deliberately leaves the user-owned app window open. Policy remains in Wrangle rather than
-the extension.
+or receipt vocabulary. Consequential actions stop before delivery and can be resumed once by a bound
+approval (below). Every other result releases Wrangle's exclusive lease at once, and every result
+deliberately leaves the user-owned app window open. Policy remains in Wrangle rather than the extension.
+
+### Bound approval
+
+When a task stops with `status: "approval_required"`, the result carries the agent-facing
+`pending_action` (operation, role, label, and for typed text only `{source, characters}`) and a
+tool-facing `binding` that the `computer` tool strips before the agent sees it:
+
+```json
+"binding": { "proposal_id": "…", "scope_id": "…", "revision": "…", "ttl_seconds": 300,
+             "session": "task-…", "pending_text": "exact text the driver will type" }
+```
+
+`pending_text` appears only for typed text and is exactly the stored proposal text (an explicit literal
+or an exact quoted goal span), so the person approves the bytes that will be typed. A child process
+keeps the session, exclusive lease, and in-memory proposal live on the session socket for at most
+300 seconds. One bound request resolves it:
+
+```bash
+wrangle approve --session S --proposal-id ID --scope-id ID --revision REV --json   # sends approve: true
+wrangle decline --session S --proposal-id ID --scope-id ID --revision REV --json
+```
+
+Approve delivers that one stored action at most once (no rewrites of operation, ref, text, label, or
+candidate) and returns a `wrangle.receipt.v1` plus bounded evidence. Decline sends nothing and returns
+a `refused/declined` receipt. Other outcomes are `wrangle.approval.v1` with a `status`:
+
+| status | reason | meaning |
+|---|---|---|
+| `approval_lost` | `stale_target` | the window changed; spent, nothing sent |
+| `approval_lost` | `lost_scope` | the window or process is gone; spent, session poisoned |
+| `approval_lost` | `unknown` | the request does not match the binding; the real approval stays live |
+| `approval_lost` | `consumed` | already declined, delivered, expired, or spent |
+| `approval_expired` | `expired` | more than 300 s since the stop; spent |
+| `session_locked` | `session_locked` | the Mac is locked; retryable with the same binding until the TTL |
+
+Every terminal outcome releases the lease and the child exits. After it exits, a CLI call fails with
+exit 5 `No wrangle session`; the tool reports that as `approval_expired`. The socket is created 0600 in
+an owner-only (0700) directory, which keeps other users out but not other processes of the same user,
+and the event log records binding fields only as salted, truncated hashes.
 
 ## CLI
 

@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "minitest/mock"
 require "socket"
 
 require_relative "test_helper"
@@ -35,6 +34,16 @@ class DesktopBoundApprovalTest < Minitest::Test
   end
 
   SessionClient = Wrangle::SessionClient
+
+  # Stands in for a directory owned by another user (minitest/mock is not bundled with minitest 6).
+  module ChmodRefusal
+    def chmod(*arguments)
+      raise Errno::EPERM if Thread.current[:wrangle_refuse_chmod]
+
+      super
+    end
+  end
+  File.singleton_class.prepend(ChmodRefusal)
   SHORT_TMP = File.directory?("/tmp") && File.writable?("/tmp") ? "/tmp" : nil
 
   def setup
@@ -726,10 +735,11 @@ class DesktopBoundApprovalTest < Minitest::Test
 
   def test_private_directory_leaves_a_directory_it_cannot_tighten
     directory = File.join(@directory, "theirs")
-    File.stub(:chmod, ->(*) { raise Errno::EPERM }) do
-      assert_nil Wrangle::DesktopSessionProtocol.private_directory(directory)
-    end
+    Thread.current[:wrangle_refuse_chmod] = true
+    assert_nil Wrangle::DesktopSessionProtocol.private_directory(directory)
     assert File.directory?(directory)
+  ensure
+    Thread.current[:wrangle_refuse_chmod] = nil
   end
 
   def test_doctor_errors_are_treated_as_unlocked

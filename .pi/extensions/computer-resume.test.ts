@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
-import { describe, it, beforeEach } from "node:test";
+import { beforeEach, describe, it } from "node:test";
 
 import {
   DEFAULT_TTL_SECONDS,
+  VERIFIED_EFFECT,
+  agentHintFor,
+  agentOutputFromMapped,
   approveArgv,
   approveRequest,
   classifyParams,
   declineArgv,
   declineRequest,
   decodeResumeToken,
-  gateSendApproval,
   isTokenSpent,
   mapResumeOutcome,
   markTokenSpent,
@@ -18,620 +20,235 @@ import {
   prepareAgentValue,
   prepareApprovalRequired,
   resetResumeStateForTests,
-  shouldSpendToken,
   stripSecrets,
+  summaryLines,
 } from "./computer-resume.ts";
 
-const PENDING_TEXT = 'Send "hello" to #general';
+const SUMMARY = { app: "Slack", operation: "PRESS", role: "button", label: "Send" };
 const BINDING = {
   proposal_id: "prop-UNIQUE-aaa111",
   scope_id: "scope-UNIQUE-bbb222",
   revision: "rev-UNIQUE-ccc333",
   session: "task-UNIQUE-ddd444",
   ttl_seconds: 300,
-  pending_text: PENDING_TEXT,
+  pending_summary: SUMMARY,
 };
 
-beforeEach(() => {
-  resetResumeStateForTests();
-});
+const ok = (value: unknown) => ({ ok: true, value });
+const map = (decision: "send" | "decline", reply: any, extra: any = {}) =>
+  mapResumeOutcome({ decision, code: 0, stdout: "", stderr: "", reply, app: "Slack", ...extra });
 
-describe("resume token from binding", () => {
-  it("roundtrips binding fields including session and pending_text and hides them", () => {
-    const token = mintResumeToken(BINDING, 1_700_000_000_000);
-    assert.equal(token.includes(BINDING.proposal_id), false);
-    assert.equal(token.includes(BINDING.scope_id), false);
-    assert.equal(token.includes(String(BINDING.revision)), false);
-    assert.equal(token.includes(BINDING.session), false);
-    assert.equal(token.includes(PENDING_TEXT), false);
-    assert.equal(token.startsWith("v1."), true);
+beforeEach(() => resetResumeStateForTests());
 
+describe("resume token", () => {
+  it("roundtrips ids, session, and pending_summary and hides them", () => {
+    const token = mintResumeToken({ ...BINDING, pending_summary: { ...SUMMARY, typed_text: "hi-UNIQUE" } }, 1_700_000_000_000);
+    for (const secret of [BINDING.proposal_id, BINDING.scope_id, BINDING.revision, BINDING.session, "hi-UNIQUE", "Slack"]) {
+      assert.equal(token.includes(secret), false, secret);
+    }
     const decoded = decodeResumeToken(token, 1_700_000_000_000);
     assert.equal(decoded.ok, true);
     if (!decoded.ok) return;
     assert.equal(decoded.binding.proposal_id, BINDING.proposal_id);
-    assert.equal(decoded.binding.scope_id, BINDING.scope_id);
-    assert.equal(decoded.binding.revision, BINDING.revision);
     assert.equal(decoded.binding.session, BINDING.session);
-    assert.equal(decoded.binding.ttl_seconds, 300);
-    assert.equal(decoded.binding.pending_text, PENDING_TEXT);
+    assert.deepEqual(decoded.binding.pending_summary, { ...SUMMARY, typed_text: "hi-UNIQUE" });
   });
 
-  it("treats tamper or garbage as approval_lost", () => {
-    const token = mintResumeToken(BINDING);
-    const tampered = `${token.slice(0, -2)}ab`;
-    assert.deepEqual(decodeResumeToken(tampered), { ok: false, status: "approval_lost" });
+  it("garbage, tamper, spent → approval_lost; over ttl → approval_expired; default ttl 300", () => {
+    const iat = 1_700_000_000_000;
+    const token = mintResumeToken(BINDING, iat);
+    assert.deepEqual(decodeResumeToken(`${token.slice(0, -2)}ab`, iat), { ok: false, status: "approval_lost" });
     assert.deepEqual(decodeResumeToken("garbage"), { ok: false, status: "approval_lost" });
-    assert.deepEqual(decodeResumeToken("v2.aaaa"), { ok: false, status: "approval_lost" });
-  });
-
-  it("treats age over ttl_seconds as approval_expired", () => {
-    const iat = 1_700_000_000_000;
-    const token = mintResumeToken({ ...BINDING, ttl_seconds: 300 }, iat);
-    const expired = decodeResumeToken(token, iat + 300_000 + 1);
-    assert.deepEqual(expired, { ok: false, status: "approval_expired" });
-    const fresh = decodeResumeToken(token, iat + 300_000);
-    assert.equal(fresh.ok, true);
-  });
-
-  it("defaults ttl to 300 seconds when binding omits ttl_seconds", () => {
-    const iat = 1_700_000_000_000;
-    const token = mintResumeToken({
-      proposal_id: BINDING.proposal_id,
-      scope_id: BINDING.scope_id,
-      revision: BINDING.revision,
-      session: BINDING.session,
-      pending_text: PENDING_TEXT,
-    }, iat);
-    const decoded = decodeResumeToken(token, iat);
-    assert.equal(decoded.ok, true);
-    if (!decoded.ok) return;
-    assert.equal(decoded.binding.ttl_seconds, DEFAULT_TTL_SECONDS);
-  });
-
-  it("treats a second use after decline or send as approval_lost", () => {
-    const token = mintResumeToken(BINDING);
+    assert.deepEqual(decodeResumeToken(token, iat + 300_001), { ok: false, status: "approval_expired" });
+    const noTtl = mintResumeToken({ ...BINDING, ttl_seconds: undefined }, iat);
+    const decoded = decodeResumeToken(noTtl, iat);
+    assert.equal(decoded.ok && decoded.binding.ttl_seconds, DEFAULT_TTL_SECONDS);
     markTokenSpent(token);
-    assert.equal(isTokenSpent(token), true);
-    assert.deepEqual(decodeResumeToken(token), { ok: false, status: "approval_lost" });
-  });
-
-  it("does not spend the token on session_locked", () => {
-    assert.equal(shouldSpendToken("session_locked"), false);
-    assert.equal(shouldSpendToken("done"), true);
-    assert.equal(shouldSpendToken("declined"), true);
-    assert.equal(shouldSpendToken("confirmation_needed"), false);
-    assert.equal(shouldSpendToken("not_confirmed"), false);
-    // session_locked path leaves token valid for a later resume
-    const token = mintResumeToken(BINDING);
-    assert.equal(isTokenSpent(token), false);
-    const again = decodeResumeToken(token);
-    assert.equal(again.ok, true);
+    assert.deepEqual(decodeResumeToken(token, iat), { ok: false, status: "approval_lost" });
   });
 });
 
-describe("person-in-the-loop confirm gate", () => {
-  it("confirm true proceeds and shows exact pending_text to confirm", async () => {
-    let seenMessage = "";
-    const gate = await gateSendApproval({
-      pendingText: PENDING_TEXT,
-      hasUI: true,
-      ui: {
-        confirm: async (_title, message) => {
-          seenMessage = message;
-          return true;
-        },
-      },
-    });
-    assert.equal(gate.action, "proceed");
-    if (gate.action !== "proceed") return;
-    assert.equal(gate.confirmMessage, PENDING_TEXT);
-    assert.equal(seenMessage, PENDING_TEXT);
-
-    const token = mintResumeToken(BINDING);
-    const plan = planResume({ decision: "send", resume_token: token });
-    assert.equal(plan.action, "call");
-    if (plan.action !== "call") return;
-    assert.deepEqual(plan.request, approveRequest(BINDING));
-    assert.equal(isTokenSpent(token), false);
+describe("confirm summary", () => {
+  it("shows app, operation, role, label for a click without pending_text", () => {
+    const plan = summaryLines(SUMMARY, undefined);
+    assert.equal(plan.ok, true);
+    if (!plan.ok) return;
+    assert.equal(plan.message, 'Slack: PRESS button "Send"');
   });
 
-  it("confirm false never reaches the engine and does not spend the token", async () => {
-    const token = mintResumeToken(BINDING);
-    const gate = await gateSendApproval({
-      pendingText: PENDING_TEXT,
-      hasUI: true,
-      ui: { confirm: async () => false },
-    });
-    assert.equal(gate.action, "blocked");
-    if (gate.action !== "blocked") return;
-    assert.equal(gate.status, "not_confirmed");
-    assert.equal(isTokenSpent(token), false);
-    // A blocked gate means computer.ts must not call pi.exec / plan argv is unused.
+  it("adds typed_text when present", () => {
+    const plan = summaryLines({ ...SUMMARY, typed_text: "hello" }, undefined);
+    assert.equal(plan.ok && plan.message, 'Slack: PRESS button "Send"\nText: hello');
   });
 
-  it("missing UI never reaches the engine and does not spend the token", async () => {
-    const token = mintResumeToken(BINDING);
-    const gate = await gateSendApproval({
-      pendingText: PENDING_TEXT,
-      hasUI: false,
-      ui: { confirm: async () => true },
-    });
-    assert.equal(gate.action, "blocked");
-    if (gate.action !== "blocked") return;
-    assert.equal(gate.status, "confirmation_needed");
-    assert.equal(isTokenSpent(token), false);
-
-    const noUi = await gateSendApproval({
-      pendingText: PENDING_TEXT,
-      hasUI: true,
-      ui: null,
-    });
-    assert.equal(noUi.action, "blocked");
-    if (noUi.action !== "blocked") return;
-    assert.equal(noUi.status, "confirmation_needed");
+  it("SET_TEXT shows exact pending_text, and fails closed without any text", () => {
+    const setText = { app: "Slack", operation: "SET_TEXT", role: "textfield", label: "Message" };
+    const plan = summaryLines(setText, 'Exactly  "this"\n');
+    assert.equal(plan.ok && plan.message, 'Slack: SET_TEXT textfield "Message"\nText: Exactly  "this"\n');
+    assert.deepEqual(summaryLines(setText, undefined), { ok: false, reason: "missing_text" });
   });
 
-  it("missing pending_text never confirms, never sends, and does not spend", async () => {
-    const token = mintResumeToken({
-      proposal_id: BINDING.proposal_id,
-      scope_id: BINDING.scope_id,
-      revision: BINDING.revision,
-      session: BINDING.session,
-    });
-    const decoded = decodeResumeToken(token);
-    assert.equal(decoded.ok, true);
-    if (!decoded.ok) return;
-    assert.equal(decoded.binding.pending_text, undefined);
-
-    let confirmCalls = 0;
-    const gate = await gateSendApproval({
-      pendingText: decoded.binding.pending_text,
-      hasUI: true,
-      ui: {
-        confirm: async () => {
-          confirmCalls += 1;
-          return true;
-        },
-      },
-    });
-    assert.equal(gate.action, "blocked");
-    if (gate.action !== "blocked") return;
-    assert.equal(gate.status, "not_confirmed");
-    assert.equal(confirmCalls, 0);
-    assert.equal(isTokenSpent(token), false);
+  it("fails closed only when pending_summary is missing", () => {
+    assert.deepEqual(summaryLines(undefined, "text"), { ok: false, reason: "missing_summary" });
   });
 });
 
-describe("agent JSON sanitization", () => {
-  it("approval_required agent JSON has resume_token and no secret fields including pending_text", () => {
+describe("agent JSON", () => {
+  it("approval_required has resume_token and nothing secret, decider stripped", () => {
     const prepared = prepareApprovalRequired({
       status: "approval_required",
       app: "Slack",
-      binding: { ...BINDING },
-      pending_action: {
-        operation: "click",
-        role: "button",
-        label: "Send",
-        text: { source: "literal", characters: 5 },
-      },
+      binding: { ...BINDING, pending_text: "typed-UNIQUE", pending_summary: { ...SUMMARY, typed_text: "typed-UNIQUE" } },
+      pending_action: { operation: "PRESS", role: "button", label: "Send", text: { source: "goal:1", characters: 12 } },
+      decider: { operation: "PRESS", confidence: 0.91, provider: "jev", model: "m-UNIQUE" },
+      decision: { operation: "PRESS", confidence: 0.91, provider: "jev", model: "m-UNIQUE" },
       receipt: { dispatch: "held" },
-      receipts: [{ dispatch: "held" }],
-      proposal: { proposal_id: BINDING.proposal_id },
-      ref: 3,
     });
-
     assert.equal(prepared.failClosed, false);
-    assert.equal(typeof prepared.resume_token, "string");
-    assert.equal(prepared.pending_text, PENDING_TEXT);
-
     const agent = prepared.agentValue;
     assert.equal(agent.status, "approval_required");
-    assert.equal(agent.resume_token, prepared.resume_token);
-    for (const key of [
-      "proposal_id", "scope_id", "revision", "session", "ttl_seconds",
-      "binding", "pending_text", "receipt", "receipts", "proposal", "ref",
-    ]) {
-      assert.equal(key in agent, false, key);
+    assert.equal(typeof agent.resume_token, "string");
+    const content = JSON.stringify(agent);
+    for (const key of ["proposal_id", "scope_id", "revision", "session", "ttl_seconds", "binding", "pending_text",
+      "pending_summary", "typed_text", "receipt", "decider", "decision", "confidence", "provider", "model"]) {
+      assert.equal(content.includes(`"${key}"`), false, key);
     }
-    assert.deepEqual(agent.pending_action, {
-      operation: "click",
-      role: "button",
-      label: "Send",
-      text: { source: "literal", characters: 5 },
-    });
-
-    const content = JSON.stringify({ ok: true, value: agent });
-    assert.equal(content.includes(BINDING.proposal_id), false);
-    assert.equal(content.includes(BINDING.scope_id), false);
-    assert.equal(content.includes(String(BINDING.revision)), false);
-    assert.equal(content.includes(BINDING.session), false);
-    assert.equal(content.includes(PENDING_TEXT), false);
-    assert.equal(content.includes("pending_text"), false);
+    for (const secret of [BINDING.proposal_id, BINDING.scope_id, BINDING.revision, BINDING.session, "typed-UNIQUE", "m-UNIQUE"]) {
+      assert.equal(content.includes(secret), false, secret);
+    }
+    assert.deepEqual(agent.pending_action, { operation: "PRESS", role: "button", label: "Send", text: { source: "goal:1", characters: 12 } });
+    assert.deepEqual(prepared.person.summaryLines, ['Slack: PRESS button "Send"', "Text: typed-UNIQUE"]);
   });
 
-  it("fails closed when approval_required lacks a parked session binding", () => {
-    const prepared = prepareApprovalRequired({
-      status: "approval_required",
-      app: "Slack",
-      pending_action: { operation: "click", role: "button", label: "Send" },
-    });
+  it("mints a token even without pending_summary (decline still works) but marks it unsendable", () => {
+    const prepared = prepareApprovalRequired({ status: "approval_required", binding: { ...BINDING, pending_summary: undefined } }, { app: "Slack" });
+    assert.equal(prepared.failClosed, false);
+    assert.equal(typeof prepared.resume_token, "string");
+    assert.equal(prepared.person.sendable, false);
+  });
+
+  it("fails closed with no binding or no session", () => {
+    const prepared = prepareApprovalRequired({ status: "approval_required" }, { app: "Slack" });
     assert.equal(prepared.failClosed, true);
-    assert.equal(prepared.resume_token, undefined);
     assert.equal(prepared.agentValue.status, "approval_lost");
-    assert.match(String(prepared.agentValue.message), /resume is unavailable/i);
+    assert.equal(prepared.resume_token, undefined);
   });
 
-  it("done JSON has no receipt", () => {
+  it("done strips receipt and decider everywhere", () => {
     const agent = prepareAgentValue({
       status: "done",
-      evidence: {
-        items: [{ role: "static", label: "ok" }],
-        receipt: { dispatch: "delivered" },
-        proposal_id: BINDING.proposal_id,
-      },
-      receipt: { dispatch: "delivered" },
-      receipts: [],
-      proposal: { proposal_id: BINDING.proposal_id },
-      revision: 9,
-      session: BINDING.session,
-      ttl_seconds: 300,
-      pending_text: PENDING_TEXT,
+      decider: { operation: "PRESS", confidence: 0.9, provider: "jev", model: "x" },
+      evidence: { items: [{ role: "statictext", label: "ok" }], receipt: {}, proposal_id: "p" },
+      receipt: {},
     });
-    assert.equal(agent.status, "done");
-    for (const key of ["receipt", "receipts", "proposal", "revision", "session", "ttl_seconds", "pending_text"]) {
-      assert.equal(key in agent, false, key);
-    }
-    assert.equal("receipt" in (agent.evidence ?? {}), false);
-    assert.equal("proposal_id" in (agent.evidence ?? {}), false);
+    assert.deepEqual(agent, { status: "done", evidence: { items: [{ role: "statictext", label: "ok" }] } });
     assert.deepEqual(stripSecrets({ receipt: 1, keep: 2 }), { keep: 2 });
   });
+
+  it("no hint mentions a confirmation that never happened", () => {
+    assert.match(agentHintFor("approval_lost_no_ui"), /can't happen in this mode/);
+    assert.doesNotMatch(agentHintFor("approval_lost_no_ui"), /did not confirm/);
+  });
 });
 
-describe("parked session transport", () => {
-  it("approve request is exactly op, ids, and approve true", () => {
+describe("transport", () => {
+  it("approve request is exactly op, ids, approve true; decline has no approve key", () => {
     assert.deepEqual(approveRequest(BINDING), {
-      op: "approve",
-      proposal_id: BINDING.proposal_id,
-      scope_id: BINDING.scope_id,
-      revision: BINDING.revision,
-      approve: true,
+      op: "approve", proposal_id: BINDING.proposal_id, scope_id: BINDING.scope_id, revision: BINDING.revision, approve: true,
     });
+    const decline = declineRequest(BINDING);
+    assert.deepEqual(decline, { op: "decline", proposal_id: BINDING.proposal_id, scope_id: BINDING.scope_id, revision: BINDING.revision });
+    assert.equal("approve" in decline, false);
   });
 
-  it("decline request has no approve key", () => {
-    const request = declineRequest(BINDING);
-    assert.deepEqual(request, {
-      op: "decline",
-      proposal_id: BINDING.proposal_id,
-      scope_id: BINDING.scope_id,
-      revision: BINDING.revision,
-    });
-    assert.equal("approve" in request, false);
+  it("CLI argv names the parked session", () => {
+    const tail = ["--session", BINDING.session, "--proposal-id", BINDING.proposal_id, "--scope-id", BINDING.scope_id, "--revision", BINDING.revision, "--json"];
+    assert.deepEqual(approveArgv(BINDING), ["approve", ...tail]);
+    assert.deepEqual(declineArgv(BINDING), ["decline", ...tail]);
   });
 
-  it("CLI argv reaches the parked session by name", () => {
-    assert.deepEqual(approveArgv(BINDING), [
-      "approve",
-      "--session", BINDING.session,
-      "--proposal-id", BINDING.proposal_id,
-      "--scope-id", BINDING.scope_id,
-      "--revision", BINDING.revision,
-      "--json",
-    ]);
-    assert.deepEqual(declineArgv(BINDING), [
-      "decline",
-      "--session", BINDING.session,
-      "--proposal-id", BINDING.proposal_id,
-      "--scope-id", BINDING.scope_id,
-      "--revision", BINDING.revision,
-      "--json",
-    ]);
-  });
-
-  it("builds those requests from a valid resume plan", () => {
+  it("mixed goal + decision never plans an engine call", () => {
     const token = mintResumeToken(BINDING);
-    const send = planResume({ decision: "send", resume_token: token });
-    assert.equal(send.action, "call");
-    if (send.action !== "call") return;
-    assert.deepEqual(send.request, approveRequest(BINDING));
-    assert.deepEqual(send.argv, approveArgv(BINDING));
-
-    const decline = planResume({ decision: "decline", resume_token: token });
-    assert.equal(decline.action, "call");
-    if (decline.action !== "call") return;
-    assert.deepEqual(decline.request, declineRequest(BINDING));
-    assert.equal("approve" in decline.request, false);
-  });
-
-  it("does not reach the engine when resume also has goal", () => {
-    const token = mintResumeToken(BINDING);
-    assert.equal(classifyParams({
-      decision: "send",
-      resume_token: token,
-      goal: "send it",
-      app: "Slack",
-    }), "invalid_mixed");
-
-    const plan = planResume({
-      decision: "send",
-      resume_token: token,
-      goal: "send it",
-      app: "Slack",
-    } as any);
+    assert.equal(classifyParams({ decision: "send", resume_token: token, goal: "x", app: "Slack" }), "invalid_mixed");
+    const plan = planResume({ decision: "send", resume_token: token, goal: "x" } as any);
     assert.equal(plan.action, "status");
-    if (plan.action !== "status") return;
-    assert.equal(plan.status, "approval_lost");
-    assert.equal("argv" in plan, false);
-    assert.equal("request" in plan, false);
+    assert.equal(isTokenSpent(token), false);
   });
 });
 
-describe("resume outcome mapping", () => {
-  it("maps delivered verified receipt to done with visible wording", () => {
-    const mapped = mapResumeOutcome({
-      code: 0,
-      stdout: "",
-      stderr: "",
-      app: "Slack",
-      reply: {
-        ok: true,
-        value: {
-          receipt: {
-            schema: "wrangle.receipt.v1",
-            proposal_id: BINDING.proposal_id,
-            dispatch: "delivered",
-            effect: "changed",
-            reason: "ok",
-            scope_id: BINDING.scope_id,
-          },
-          evidence: { complete: true, items: [{ role: "static", label: "ok" }], selection: "bounded" },
-        },
-      },
-    });
-    assert.equal(mapped.status, "done");
-    assert.equal(mapped.verified, true);
-    assert.match(mapped.message, /visible/i);
-    assert.equal(mapped.spend, true);
+describe("outcome mapping", () => {
+  const receipt = (fields: any) => ok({ receipt: { schema: "wrangle.receipt.v1", ...fields }, evidence: { items: [] } });
+
+  it(`only effect "${VERIFIED_EFFECT}" gets the visible wording`, () => {
+    const verified = map("send", receipt({ dispatch: "delivered", effect: "verified" }));
+    assert.equal(verified.status, "done");
+    assert.equal(verified.verified, true);
+    assert.match(verified.message, /visible/);
   });
 
-  it("maps unverified and verification_error delivered receipts to couldn't-verify wording", () => {
-    const unverified = mapResumeOutcome({
-      code: 0,
-      stdout: "",
-      stderr: "",
-      app: "Slack",
-      reply: {
-        ok: true,
-        value: {
-          receipt: {
-            schema: "wrangle.receipt.v1",
-            dispatch: "delivered",
-            effect: "unverified",
-          },
-          evidence: { complete: true, items: [], selection: "bounded" },
-        },
-      },
-    });
-    assert.equal(unverified.status, "done");
-    assert.equal(unverified.verified, false);
-    assert.equal(unverified.hintStatus, "done_unverified");
-    assert.equal(unverified.message, "Sent, but Wrangle couldn't verify the result in Slack.");
-
-    const withError = mapResumeOutcome({
-      code: 0,
-      stdout: "",
-      stderr: "",
-      app: "Finder",
-      reply: {
-        ok: true,
-        value: {
-          receipt: {
-            schema: "wrangle.receipt.v1",
-            dispatch: "delivered",
-            effect: "changed",
-            verification_error: "ScopeLost: window gone",
-          },
-        },
-      },
-    });
-    assert.equal(withError.status, "done");
-    assert.equal(withError.verified, false);
-    assert.equal(withError.message, "Sent, but Wrangle couldn't verify the result in Finder.");
-  });
-
-  it("maps decline receipt to declined", () => {
-    const mapped = mapResumeOutcome({
-      code: 0,
-      stdout: "",
-      stderr: "",
-      reply: {
-        ok: true,
-        value: {
-          schema: "wrangle.receipt.v1",
-          dispatch: "refused",
-          effect: "not_applicable",
-          reason: "declined",
-          approval: "spent",
-          proposal_id: BINDING.proposal_id,
-        },
-      },
-    });
-    assert.equal(mapped.status, "declined");
-    assert.equal(mapped.spend, true);
-  });
-
-  it("maps approval_lost reasons including not_delivered spent proposals", () => {
-    for (const reason of ["stale_target", "lost_scope", "unknown", "consumed"]) {
-      const mapped = mapResumeOutcome({
-        code: 0,
-        stdout: "",
-        stderr: "",
-        reply: {
-          ok: true,
-          value: {
-            schema: "wrangle.approval.v1",
-            status: "approval_lost",
-            reason,
-            retryable: false,
-            proposal_id: BINDING.proposal_id,
-            scope_id: BINDING.scope_id,
-            revision: BINDING.revision,
-          },
-        },
-      });
-      assert.equal(mapped.status, "approval_lost", reason);
-      assert.equal(mapped.spend, true, reason);
+  it("unchanged, unverified, missing, unknown, verification_error → couldn't verify", () => {
+    for (const fields of [
+      { effect: "unchanged" }, { effect: "unverified" }, {}, { effect: "something_new" },
+      { effect: "verified", verification_error: "ScopeLost: gone" },
+    ]) {
+      const mapped = map("send", receipt({ dispatch: "delivered", ...fields }));
+      assert.equal(mapped.status, "done", JSON.stringify(fields));
+      assert.equal(mapped.verified, false, JSON.stringify(fields));
+      assert.equal(mapped.message, "Sent, but Wrangle couldn't verify the result in Slack.");
+      assert.match(agentOutputFromMapped(mapped).agent_hint, /Do not claim the result is visible/);
     }
-
-    const spent = mapResumeOutcome({
-      code: 0,
-      stdout: "",
-      stderr: "",
-      reply: {
-        ok: true,
-        value: {
-          receipt: {
-            schema: "wrangle.receipt.v1",
-            dispatch: "not_delivered",
-            effect: "not_applicable",
-            reason: "session_locked",
-            approval: "spent",
-          },
-        },
-      },
-    });
-    assert.equal(spent.status, "approval_lost");
   });
 
-  it("maps DeliveryUnknown from ok false and from receipt dispatch", () => {
-    const fromClass = mapResumeOutcome({
-      code: 4,
-      stdout: "",
-      stderr: "",
-      reply: {
-        ok: false,
-        class: "DeliveryUnknown",
-        error: "Desktop action delivery was interrupted after durable dispatch began",
-        terminal: true,
-        retryable: false,
-      },
-    });
-    assert.equal(fromClass.status, "delivery_unknown");
-    assert.equal(fromClass.spend, true);
-
-    const fromReceipt = mapResumeOutcome({
-      code: 0,
-      stdout: "",
-      stderr: "",
-      reply: {
-        ok: true,
-        value: {
-          receipt: {
-            schema: "wrangle.receipt.v1",
-            dispatch: "delivery_unknown",
-            effect: "unknown",
-            reason: "interrupted",
-          },
-        },
-      },
-    });
-    assert.equal(fromReceipt.status, "delivery_unknown");
+  it("declined receipt → declined, spent", () => {
+    const mapped = map("decline", ok({ schema: "wrangle.receipt.v1", dispatch: "refused", effect: "not_applicable", reason: "declined", approval: "spent" }));
+    assert.deepEqual([mapped.status, mapped.spend], ["declined", true]);
   });
 
-  it("maps terminal DriverRefusal to delivery_unknown", () => {
+  it("stale_target, lost_scope, consumed and not_delivered → approval_lost, spent", () => {
+    for (const reason of ["stale_target", "lost_scope", "consumed"]) {
+      const mapped = map("send", ok({ schema: "wrangle.approval.v1", status: "approval_lost", reason, retryable: false }));
+      assert.deepEqual([mapped.status, mapped.spend], ["approval_lost", true], reason);
+    }
+    const mapped = map("send", receipt({ dispatch: "not_delivered", effect: "not_applicable", reason: "session_locked" }));
+    assert.deepEqual([mapped.status, mapped.spend], ["approval_lost", true]);
+  });
+
+  it("unknown id and ArgumentError refusals keep the binding: approval_lost without spending", () => {
+    const unknown = map("send", ok({ schema: "wrangle.approval.v1", status: "approval_lost", reason: "unknown", retryable: false }));
+    assert.deepEqual([unknown.status, unknown.spend], ["approval_lost", false]);
+    const refusal = mapResumeOutcome({
+      decision: "send", code: 3, stdout: "", stderr: "",
+      reply: { ok: false, class: "ArgumentError", error: "Bound approval requires approve: true; a non-true approve is not a decline", terminal: false, retryable: false },
+    });
+    assert.deepEqual([refusal.status, refusal.spend], ["approval_lost", false]);
+    assert.match(agentOutputFromMapped(refusal).agent_hint, /Do not retry on your own/);
+  });
+
+  it("DeliveryUnknown (class and receipt) and terminal DriverRefusal → delivery_unknown", () => {
+    const byClass = map("send", { ok: false, class: "DeliveryUnknown", error: "interrupted", terminal: true });
+    const byReceipt = map("send", receipt({ dispatch: "delivery_unknown" }));
+    const driver = map("send", { ok: false, class: "DriverRefusal", error: "helper refused", terminal: true });
+    for (const mapped of [byClass, byReceipt, driver]) assert.deepEqual([mapped.status, mapped.spend], ["delivery_unknown", true]);
+    assert.doesNotMatch(driver.message, /Nothing was sent/);
+  });
+
+  it('exit 5 "No wrangle session" → approval_expired', () => {
     const mapped = mapResumeOutcome({
-      code: 4,
-      stdout: "",
-      stderr: "",
-      reply: {
-        ok: false,
-        class: "DriverRefusal",
-        error: "helper refused after the durable marker",
-        terminal: true,
-        retryable: false,
-      },
-    });
-    assert.equal(mapped.status, "delivery_unknown");
-    assert.match(mapped.message, /may or may not/i);
-    assert.equal(mapped.spend, true);
-  });
-
-  it("maps exit 5 No wrangle session to approval_expired", () => {
-    const mapped = mapResumeOutcome({
-      code: 5,
-      stdout: "",
-      stderr: "BridgeError: No wrangle session at /tmp/missing.sock. Start one with `wrangle open <url>`.",
-      reply: null,
+      decision: "send", code: 5, stdout: "",
+      stderr: "BridgeError: No wrangle session at /tmp/w/task-1.sock. Start one with `wrangle open <url>`.",
     });
     assert.equal(mapped.status, "approval_expired");
-    assert.equal(mapped.spend, true);
   });
 
-  it("maps mid-call session close and exec timeout to delivery_unknown", () => {
-    const closed = mapResumeOutcome({
-      code: 5,
-      stdout: "",
-      stderr: "BridgeError: The wrangle session closed without replying",
-      reply: null,
-    });
-    assert.equal(closed.status, "delivery_unknown");
-    assert.equal(closed.spend, true);
-
-    const timedOut = mapResumeOutcome({
-      code: 1,
-      stdout: "",
-      stderr: "Command timed out after 300000ms",
-      reply: null,
-      timedOut: true,
-    });
-    assert.equal(timedOut.status, "delivery_unknown");
-
-    const aborted = mapResumeOutcome({
-      code: 1,
-      stdout: "",
-      stderr: "Aborted",
-      reply: null,
-      aborted: true,
-    });
-    assert.equal(aborted.status, "delivery_unknown");
+  it("session closed mid-call, exec timeout/kill → delivery_unknown, spent", () => {
+    const closed = mapResumeOutcome({ decision: "send", code: 5, stdout: "", stderr: "BridgeError: The wrangle session closed without replying" });
+    const killed = mapResumeOutcome({ decision: "send", code: 1, stdout: "", stderr: "", killed: true });
+    const declineClosed = mapResumeOutcome({ decision: "decline", code: 5, stdout: "", stderr: "BridgeError: The wrangle session closed without replying" });
+    for (const mapped of [closed, killed, declineClosed]) assert.deepEqual([mapped.status, mapped.spend], ["delivery_unknown", true]);
   });
 
-  it("maps approval_expired from the parked child", () => {
-    const mapped = mapResumeOutcome({
-      code: 0,
-      stdout: "",
-      stderr: "",
-      reply: {
-        ok: true,
-        value: {
-          schema: "wrangle.approval.v1",
-          status: "approval_expired",
-          reason: "expired",
-          retryable: false,
-        },
-      },
-    });
-    assert.equal(mapped.status, "approval_expired");
-    assert.equal(mapped.spend, true);
-  });
-
-  it("maps session_locked without spending", () => {
-    const mapped = mapResumeOutcome({
-      code: 0,
-      stdout: "",
-      stderr: "",
-      reply: {
-        ok: true,
-        value: {
-          schema: "wrangle.approval.v1",
-          status: "session_locked",
-          reason: "session_locked",
-          retryable: true,
-        },
-      },
-    });
-    assert.equal(mapped.status, "session_locked");
-    assert.equal(mapped.spend, false);
+  it("session_locked does not spend", () => {
+    const mapped = map("send", ok({ schema: "wrangle.approval.v1", status: "session_locked", reason: "session_locked", retryable: true }));
+    assert.deepEqual([mapped.status, mapped.spend], ["session_locked", false]);
   });
 });

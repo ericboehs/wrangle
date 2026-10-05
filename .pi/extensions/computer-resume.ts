@@ -4,20 +4,27 @@ export type Json = Record<string, any>;
 
 export type ResumeDecision = "send" | "decline";
 
-export type ResumeIds = {
+export type ResumeBinding = {
   proposal_id: string;
   scope_id: string;
   revision: string | number;
+  session?: string;
+  ttl_seconds?: number;
 };
 
 const TOKEN_VERSION = "v1";
-export const RESUME_TTL_MS = 300_000;
+export const DEFAULT_TTL_SECONDS = 300;
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
 
 const TOKEN_KEY = randomBytes(32);
 const spentTokens = new Set<string>();
-const pendingByToken = new Map<string, { app?: string; label?: string; pending_text?: string }>();
+const pendingByToken = new Map<string, {
+  app?: string;
+  label?: string;
+  pending_text?: string;
+  session?: string;
+}>();
 
 const SECRET_KEYS = new Set([
   "proposal_id",
@@ -28,6 +35,11 @@ const SECRET_KEYS = new Set([
   "receipts",
   "proposal",
   "ref",
+  "binding",
+  "session",
+  "ttl_seconds",
+  "before_revision",
+  "after_revision",
 ]);
 
 export function resetResumeStateForTests(): void {
@@ -37,12 +49,17 @@ export function resetResumeStateForTests(): void {
 
 export function rememberPending(
   token: string,
-  meta: { app?: string; label?: string; pending_text?: string },
+  meta: { app?: string; label?: string; pending_text?: string; session?: string },
 ): void {
   pendingByToken.set(token, meta);
 }
 
-export function lookupPending(token: string): { app?: string; label?: string; pending_text?: string } | undefined {
+export function lookupPending(token: string): {
+  app?: string;
+  label?: string;
+  pending_text?: string;
+  session?: string;
+} | undefined {
   return pendingByToken.get(token);
 }
 
@@ -55,12 +72,21 @@ export function isTokenSpent(token: string): boolean {
   return spentTokens.has(token);
 }
 
-export function mintResumeToken(ids: ResumeIds, now = Date.now()): string {
+function ttlMs(ttlSeconds: number | undefined): number {
+  const seconds = typeof ttlSeconds === "number" && Number.isFinite(ttlSeconds) && ttlSeconds > 0
+    ? ttlSeconds
+    : DEFAULT_TTL_SECONDS;
+  return seconds * 1000;
+}
+
+export function mintResumeToken(binding: ResumeBinding, now = Date.now()): string {
   const iv = randomBytes(IV_BYTES);
   const payload = Buffer.from(JSON.stringify({
-    proposal_id: ids.proposal_id,
-    scope_id: ids.scope_id,
-    revision: ids.revision,
+    proposal_id: binding.proposal_id,
+    scope_id: binding.scope_id,
+    revision: binding.revision,
+    session: binding.session ?? null,
+    ttl_seconds: typeof binding.ttl_seconds === "number" ? binding.ttl_seconds : DEFAULT_TTL_SECONDS,
     iat: now,
   }), "utf8");
   const cipher = createCipheriv("aes-256-gcm", TOKEN_KEY, iv);
@@ -69,9 +95,9 @@ export function mintResumeToken(ids: ResumeIds, now = Date.now()): string {
   return `${TOKEN_VERSION}.${Buffer.concat([iv, ciphertext, tag]).toString("base64url")}`;
 }
 
-export type DecodeOk = ResumeIds & { iat: number };
+export type DecodeOk = ResumeBinding & { iat: number; ttl_seconds: number };
 export type DecodeResult =
-  | { ok: true; ids: DecodeOk }
+  | { ok: true; binding: DecodeOk }
   | { ok: false; status: "approval_lost" | "approval_expired" };
 
 export function decodeResumeToken(token: string, now = Date.now()): DecodeResult {
@@ -125,6 +151,8 @@ export function decodeResumeToken(token: string, now = Date.now()): DecodeResult
   const scope_id = parsed?.scope_id;
   const revision = parsed?.revision;
   const iat = parsed?.iat;
+  const ttl_seconds = parsed?.ttl_seconds;
+  const session = parsed?.session;
   if (
     typeof proposal_id !== "string" || proposal_id.length === 0 ||
     typeof scope_id !== "string" || scope_id.length === 0 ||
@@ -135,11 +163,23 @@ export function decodeResumeToken(token: string, now = Date.now()): DecodeResult
     return { ok: false, status: "approval_lost" };
   }
 
-  if (now - iat > RESUME_TTL_MS) {
+  const ttl = typeof ttl_seconds === "number" && Number.isFinite(ttl_seconds)
+    ? ttl_seconds
+    : DEFAULT_TTL_SECONDS;
+
+  if (now - iat > ttlMs(ttl)) {
     return { ok: false, status: "approval_expired" };
   }
 
-  return { ok: true, ids: { proposal_id, scope_id, revision, iat } };
+  const binding: DecodeOk = {
+    proposal_id,
+    scope_id,
+    revision,
+    ttl_seconds: ttl,
+    iat,
+  };
+  if (typeof session === "string" && session.length > 0) binding.session = session;
+  return { ok: true, binding };
 }
 
 export function startArgv(params: {
@@ -154,21 +194,52 @@ export function startArgv(params: {
   return args;
 }
 
-export function approveArgv(ids: ResumeIds): string[] {
+/** Exact JSON line the parked session receives for approve (via CLI pass-through). */
+export function approveRequest(binding: ResumeBinding): Json {
+  return {
+    op: "approve",
+    proposal_id: binding.proposal_id,
+    scope_id: binding.scope_id,
+    revision: binding.revision,
+    approve: true,
+  };
+}
+
+/** Exact JSON line the parked session receives for decline (no approve field). */
+export function declineRequest(binding: ResumeBinding): Json {
+  return {
+    op: "decline",
+    proposal_id: binding.proposal_id,
+    scope_id: binding.scope_id,
+    revision: binding.revision,
+  };
+}
+
+export function approveArgv(binding: ResumeBinding): string[] {
+  if (typeof binding.session !== "string" || binding.session.length === 0) {
+    throw new Error("approve requires a parked session name");
+  }
   return [
-    "task", "--json", "--op", "approve", "--approve", "true",
-    "--proposal-id", String(ids.proposal_id),
-    "--scope-id", String(ids.scope_id),
-    "--revision", String(ids.revision),
+    "approve",
+    "--session", binding.session,
+    "--proposal-id", String(binding.proposal_id),
+    "--scope-id", String(binding.scope_id),
+    "--revision", String(binding.revision),
+    "--json",
   ];
 }
 
-export function declineArgv(ids: ResumeIds): string[] {
+export function declineArgv(binding: ResumeBinding): string[] {
+  if (typeof binding.session !== "string" || binding.session.length === 0) {
+    throw new Error("decline requires a parked session name");
+  }
   return [
-    "task", "--json", "--op", "decline",
-    "--proposal-id", String(ids.proposal_id),
-    "--scope-id", String(ids.scope_id),
-    "--revision", String(ids.revision),
+    "decline",
+    "--session", binding.session,
+    "--proposal-id", String(binding.proposal_id),
+    "--scope-id", String(binding.scope_id),
+    "--revision", String(binding.revision),
+    "--json",
   ];
 }
 
@@ -189,7 +260,7 @@ export function classifyParams(params: any): ParamKind {
 
 export type ResumePlan =
   | { action: "status"; status: "approval_lost" | "approval_expired"; message: string; hint: string }
-  | { action: "call"; decision: ResumeDecision; token: string; argv: string[] };
+  | { action: "call"; decision: ResumeDecision; token: string; argv: string[]; request: Json };
 
 export function planResume(
   params: { decision: string; resume_token: string; goal?: unknown; app?: unknown; literals?: unknown },
@@ -216,9 +287,19 @@ export function planResume(
     };
   }
 
+  if (typeof decoded.binding.session !== "string" || decoded.binding.session.length === 0) {
+    return {
+      action: "status",
+      status: "approval_lost",
+      message: "Nothing was sent and resume is unavailable.",
+      hint: agentHintFor("approval_lost"),
+    };
+  }
+
   const decision = params.decision as ResumeDecision;
-  const argv = decision === "send" ? approveArgv(decoded.ids) : declineArgv(decoded.ids);
-  return { action: "call", decision, token: params.resume_token, argv };
+  const argv = decision === "send" ? approveArgv(decoded.binding) : declineArgv(decoded.binding);
+  const request = decision === "send" ? approveRequest(decoded.binding) : declineRequest(decoded.binding);
+  return { action: "call", decision, token: params.resume_token, argv, request };
 }
 
 export function stripSecrets(value: unknown): unknown {
@@ -234,15 +315,27 @@ export function stripSecrets(value: unknown): unknown {
   return value;
 }
 
-export function engineImpliesApprovalLost(value: Json): boolean {
-  const status = String(value.status ?? "");
-  const diagnostic = `${value.error ?? ""} ${value.message ?? ""} ${status}`;
-  return /unknown|already consumed|consumed proposal|proposal.*(unknown|consumed)/i.test(diagnostic);
-}
-
-export function mapEngineStatus(value: Json): string {
-  if (engineImpliesApprovalLost(value)) return "approval_lost";
-  return String(value.status ?? "");
+function readBinding(value: Json): ResumeBinding | null {
+  const source = (value.binding && typeof value.binding === "object") ? value.binding : value;
+  const proposal_id = source.proposal_id;
+  const scope_id = source.scope_id;
+  const revision = source.revision;
+  if (
+    typeof proposal_id !== "string" || proposal_id.length === 0 ||
+    typeof scope_id !== "string" || scope_id.length === 0 ||
+    (typeof revision !== "string" && typeof revision !== "number") ||
+    (typeof revision === "string" && revision.length === 0)
+  ) {
+    return null;
+  }
+  const binding: ResumeBinding = { proposal_id, scope_id, revision };
+  if (typeof source.session === "string" && source.session.length > 0) {
+    binding.session = source.session;
+  }
+  if (typeof source.ttl_seconds === "number" && Number.isFinite(source.ttl_seconds)) {
+    binding.ttl_seconds = source.ttl_seconds;
+  }
+  return binding;
 }
 
 export type PreparedApproval = {
@@ -252,24 +345,17 @@ export type PreparedApproval = {
   failClosed: boolean;
 };
 
-/** Read engine fields for approval_required, mint token, strip secrets for the agent. */
+/** Read engine binding for approval_required, mint token, strip secrets for the agent. */
 export function prepareApprovalRequired(
   value: Json,
   context: { app?: string } = {},
   now = Date.now(),
 ): PreparedApproval {
+  // PR #5 does not expose pending_text; keep exact text only if an engine ever adds it.
   const pending_text = typeof value.pending_text === "string" ? value.pending_text : undefined;
-  const proposal_id = value.proposal_id;
-  const scope_id = value.scope_id;
-  const revision = value.revision;
+  const binding = readBinding(value);
 
-  const missing =
-    typeof proposal_id !== "string" || proposal_id.length === 0 ||
-    typeof scope_id !== "string" || scope_id.length === 0 ||
-    (typeof revision !== "string" && typeof revision !== "number") ||
-    (typeof revision === "string" && revision.length === 0);
-
-  if (missing) {
+  if (!binding || typeof binding.session !== "string" || binding.session.length === 0) {
     const agentValue = stripSecrets({ ...value }) as Json;
     agentValue.status = "approval_lost";
     agentValue.message = "Nothing was sent and resume is unavailable.";
@@ -277,15 +363,13 @@ export function prepareApprovalRequired(
     return { agentValue, pending_text: undefined, failClosed: true };
   }
 
-  const resume_token = mintResumeToken(
-    { proposal_id, scope_id, revision },
-    now,
-  );
+  const resume_token = mintResumeToken(binding, now);
   const label = value.pending_action?.label;
   rememberPending(resume_token, {
     app: context.app ?? value.app,
     label: typeof label === "string" ? label : undefined,
     pending_text,
+    session: binding.session,
   });
 
   const agentValue = stripSecrets({ ...value }) as Json;
@@ -295,8 +379,7 @@ export function prepareApprovalRequired(
 }
 
 export function prepareAgentValue(value: Json): Json {
-  const mapped = { ...value, status: mapEngineStatus(value) };
-  return stripSecrets(mapped) as Json;
+  return stripSecrets({ ...value }) as Json;
 }
 
 export function agentHintFor(status: string): string {
@@ -355,12 +438,172 @@ export function shouldSpendToken(status: string): boolean {
 }
 
 export function statusPayload(
-  status: "approval_lost" | "approval_expired" | "declined" | "session_locked",
+  status: "approval_lost" | "approval_expired" | "declined" | "session_locked" | "delivery_unknown" | "done" | "provider_not_qualified",
   message: string,
+  extras: Json = {},
 ): Json {
   return {
     ok: true,
-    value: { status, message, root_preserved: true },
+    value: stripSecrets({ status, message, root_preserved: true, ...extras }) as Json,
     agent_hint: agentHintFor(status),
   };
+}
+
+function receiptOf(value: Json): Json | null {
+  if (value?.receipt && typeof value.receipt === "object") return value.receipt;
+  if (value?.schema === "wrangle.receipt.v1") return value;
+  return null;
+}
+
+export type MappedResume = {
+  status: string;
+  message: string;
+  evidence?: unknown;
+  spend: boolean;
+};
+
+/** Map a parked-session CLI reply (or process failure) to an agent-facing outcome. */
+export function mapResumeOutcome(input: {
+  code: number;
+  stdout: string;
+  stderr: string;
+  reply?: Json | null;
+}): MappedResume {
+  const combined = `${input.stdout}\n${input.stderr}`;
+  if (input.code === 5 && /No wrangle session/i.test(combined)) {
+    return {
+      status: "approval_expired",
+      message: "Nothing was sent. The approval window expired.",
+      spend: true,
+    };
+  }
+
+  const reply = input.reply;
+  if (!reply) {
+    if (/DeliveryUnknown/i.test(combined)) {
+      return {
+        status: "delivery_unknown",
+        message: "The action may or may not have happened and was not retried.",
+        spend: true,
+      };
+    }
+    return {
+      status: "approval_lost",
+      message: "Nothing was sent. Resume is unavailable.",
+      spend: true,
+    };
+  }
+
+  if (reply.ok === false) {
+    if (String(reply.class ?? "") === "DeliveryUnknown" || /DeliveryUnknown/i.test(String(reply.error ?? ""))) {
+      return {
+        status: "delivery_unknown",
+        message: "The action may or may not have happened and was not retried.",
+        spend: true,
+      };
+    }
+    if (/No wrangle session/i.test(String(reply.error ?? ""))) {
+      return {
+        status: "approval_expired",
+        message: "Nothing was sent. The approval window expired.",
+        spend: true,
+      };
+    }
+    // Unknown failure with ok:false before a durable send: treat as nothing confirmed sent.
+    return {
+      status: "approval_lost",
+      message: "Nothing was sent. Resume is unavailable.",
+      spend: true,
+    };
+  }
+
+  const value = (reply.value ?? {}) as Json;
+
+  if (value.schema === "wrangle.approval.v1") {
+    const status = String(value.status ?? "approval_lost");
+    if (status === "session_locked") {
+      return {
+        status: "session_locked",
+        message: "Nothing was sent. The Mac is locked.",
+        spend: false,
+      };
+    }
+    if (status === "approval_expired") {
+      return {
+        status: "approval_expired",
+        message: "Nothing was sent. The approval window expired.",
+        spend: true,
+      };
+    }
+    return {
+      status: "approval_lost",
+      message: "Nothing was sent. Resume is unavailable.",
+      spend: true,
+    };
+  }
+
+  const receipt = receiptOf(value);
+  if (receipt) {
+    if (receipt.reason === "declined" || (receipt.dispatch === "refused" && receipt.reason === "declined")) {
+      return {
+        status: "declined",
+        message: "You declined it. Nothing was sent.",
+        spend: true,
+      };
+    }
+    if (receipt.dispatch === "delivery_unknown") {
+      return {
+        status: "delivery_unknown",
+        message: "The action may or may not have happened and was not retried.",
+        spend: true,
+      };
+    }
+    if (receipt.dispatch === "delivered") {
+      return {
+        status: "done",
+        message: "The requested result is visible in the application.",
+        evidence: value.evidence,
+        spend: true,
+      };
+    }
+    if (receipt.dispatch === "not_delivered") {
+      // Spent proposal / post-marker lock: nothing to retry.
+      return {
+        status: "approval_lost",
+        message: "Nothing was sent. Resume is unavailable.",
+        spend: true,
+      };
+    }
+    if (receipt.dispatch === "refused" && receipt.reason === "provider_not_qualified") {
+      return {
+        status: "provider_not_qualified",
+        message: "The decision provider may inspect but is not qualified to change the app.",
+        spend: true,
+      };
+    }
+    if (receipt.dispatch === "refused") {
+      return {
+        status: "approval_lost",
+        message: "Nothing was sent. Resume is unavailable.",
+        spend: true,
+      };
+    }
+  }
+
+  // Unrecognized success shape after an approve/decline call: fail closed without claiming delivery.
+  return {
+    status: "delivery_unknown",
+    message: "The action may or may not have happened and was not retried.",
+    spend: true,
+  };
+}
+
+export function agentValueFromMapped(mapped: MappedResume): Json {
+  const value: Json = {
+    status: mapped.status,
+    message: mapped.message,
+    root_preserved: true,
+  };
+  if (mapped.evidence != null) value.evidence = stripSecrets(mapped.evidence);
+  return value;
 }

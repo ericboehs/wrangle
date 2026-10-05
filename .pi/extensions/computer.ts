@@ -4,15 +4,15 @@ import { Type } from "typebox";
 
 import {
   agentHintFor,
+  agentValueFromMapped,
   classifyParams,
   lookupPending,
-  mapEngineStatus,
+  mapResumeOutcome,
   markTokenSpent,
   planResume,
   prepareAgentValue,
   prepareApprovalRequired,
   resultStatusLabel,
-  shouldSpendToken,
   startArgv,
   statusPayload,
   type Json,
@@ -63,6 +63,14 @@ function parseResult(stdout: string, stderr: string): Json {
   }
 }
 
+function tryParseJson(text: string): Json | null {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 function failureMessage(result: Json): string {
   const diagnostic = String(result.error ?? "Wrangle could not use the application window");
   if (diagnostic.includes("session_locked")) {
@@ -100,26 +108,21 @@ function agentOutput(value: Json, extras: Json = {}) {
   };
 }
 
-function handleEngineValue(value: Json, context: { app?: string; token?: string } = {}) {
-  const status = mapEngineStatus(value);
-
-  if (context.token && shouldSpendToken(status)) {
-    markTokenSpent(context.token);
-  }
-
-  if (status === "approval_required") {
-    const prepared = prepareApprovalRequired({ ...value, status }, { app: context.app });
+function handleStartValue(value: Json, context: { app?: string } = {}) {
+  if (value.status === "approval_required") {
+    const prepared = prepareApprovalRequired({ ...value }, { app: context.app });
     if (prepared.failClosed) {
       return agentOutput(prepared.agentValue, { app: context.app });
     }
     return agentOutput(prepared.agentValue, {
       app: context.app ?? prepared.agentValue.app,
       pending_text: prepared.pending_text,
+      pending_label: value.pending_action?.label,
       resume_token: prepared.resume_token,
     });
   }
 
-  const agentValue = prepareAgentValue({ ...value, status });
+  const agentValue = prepareAgentValue({ ...value });
   return agentOutput(agentValue, { app: context.app ?? agentValue.app });
 }
 
@@ -144,7 +147,7 @@ async function runStart(pi: ExtensionAPI, params: StartParams, signal: AbortSign
   if (process.code !== 0) {
     throw new Error(`Wrangle stopped unexpectedly: ${process.stderr.trim() || "no diagnostic"}`);
   }
-  return handleEngineValue(reply.value as Json, { app: params.app });
+  return handleStartValue(reply.value as Json, { app: params.app });
 }
 
 async function runResume(pi: ExtensionAPI, params: ResumeParams, signal: AbortSignal | undefined, onUpdate: any) {
@@ -160,43 +163,30 @@ async function runResume(pi: ExtensionAPI, params: ResumeParams, signal: AbortSi
 
   const plan = planResume(params);
   if (plan.action === "status") {
+    const payload = statusPayload(plan.status, plan.message);
     return {
-      content: [{ type: "text", text: JSON.stringify(statusPayload(plan.status, plan.message)) }],
-      details: statusPayload(plan.status, plan.message),
+      content: [{ type: "text", text: JSON.stringify(payload) }],
+      details: payload,
     };
   }
 
   const process = await pi.exec("wrangle", plan.argv, { signal, timeout: 300_000 });
-  const reply = parseResult(process.stdout, process.stderr);
+  const reply = tryParseJson(process.stdout.trim()) ?? tryParseJson(process.stderr.trim());
+  const mapped = mapResumeOutcome({
+    code: process.code ?? 1,
+    stdout: process.stdout,
+    stderr: process.stderr,
+    reply,
+  });
 
-  if (reply.ok === false) {
-    if (replyLooksSessionLocked(reply)) {
-      return agentOutput({
-        status: "session_locked",
-        message: "Nothing was sent. The Mac is locked.",
-        root_preserved: true,
-      }, { app: pending?.app, pending_text: pending?.pending_text });
-    }
-    if (engineLost(reply)) {
-      markTokenSpent(plan.token);
-      return agentOutput({
-        status: "approval_lost",
-        message: "Nothing was sent. Resume is unavailable.",
-        root_preserved: true,
-      }, { app: pending?.app });
-    }
-    throw new Error(failureMessage(reply));
-  }
-  if (process.code !== 0) {
-    throw new Error(`Wrangle stopped unexpectedly: ${process.stderr.trim() || "no diagnostic"}`);
-  }
+  if (mapped.spend) markTokenSpent(plan.token);
 
-  return handleEngineValue(reply.value as Json, { app: pending?.app, token: plan.token });
-}
-
-function engineLost(reply: Json): boolean {
-  const diagnostic = `${reply.error ?? ""} ${reply.class ?? ""} ${reply.value?.status ?? ""}`;
-  return /unknown|already consumed|consumed/i.test(diagnostic);
+  const agentValue = agentValueFromMapped(mapped);
+  return agentOutput(agentValue, {
+    app: pending?.app,
+    pending_label: pending?.label,
+    pending_text: pending?.pending_text,
+  });
 }
 
 export default function computer(pi: ExtensionAPI) {
@@ -273,8 +263,13 @@ export default function computer(pi: ExtensionAPI) {
       if (value.status === "approval_required") {
         const app = details.app ?? value.app ?? "the app";
         const lines = [`Waiting for you in ${app}`];
+        // PR #5 has no pending_text; show the pending_action label only (never invent exact text).
         if (typeof details.pending_text === "string" && details.pending_text.length > 0) {
           lines.push(details.pending_text);
+        } else if (typeof details.pending_label === "string" && details.pending_label.length > 0) {
+          lines.push(details.pending_label);
+        } else if (typeof value.pending_action?.label === "string") {
+          lines.push(value.pending_action.label);
         }
         lines.push("Nothing has been sent.");
         return new Text(theme.fg("warning", lines.join("\n")), 0, 0);

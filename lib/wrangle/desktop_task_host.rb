@@ -5,6 +5,7 @@ require "json"
 require "rbconfig"
 require "securerandom"
 
+require_relative "desktop_session_protocol"
 require_relative "desktop_task"
 require_relative "errors"
 require_relative "session_server"
@@ -48,8 +49,7 @@ module Wrangle
     # The session directory is owner-only, and so is the child's output log.
     def private_log(socket, session)
       directory = File.dirname(socket)
-      FileUtils.mkdir_p(directory, mode: 0o700)
-      File.chmod(0o700, directory) if File.owned?(directory)
+      DesktopSessionProtocol.private_directory(directory)
       log = File.join(directory, "#{session}.log")
       File.open(log, File::WRONLY | File::CREAT | File::APPEND, 0o600) { |file| file.chmod(0o600) }
       log

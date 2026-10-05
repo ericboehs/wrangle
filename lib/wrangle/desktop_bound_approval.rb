@@ -263,11 +263,11 @@ module Wrangle
     end
 
     def lose_scope!(proposal, request)
-      @proposals.delete(proposal["id"]) if proposal
-      tombstone!(proposal["id"], "lost_scope") if proposal
+      @proposals.delete(proposal["id"])
+      tombstone!(proposal["id"], "lost_scope")
       @poisoned ||= ScopeLost.new("The attached window or process is no longer the one handed over")
       finish_parked_resolution!
-      approval_outcome("approval_lost", "lost_scope", false, request, proposal_id: proposal&.[]("id"))
+      approval_outcome("approval_lost", "lost_scope", false, request, proposal_id: proposal["id"])
     end
 
     def spend_refused!(proposal, reason)
@@ -279,7 +279,7 @@ module Wrangle
     end
 
     def tombstone!(proposal_id, reason)
-      @consumed[proposal_id] = reason if proposal_id
+      @consumed[proposal_id] = reason
     end
 
     # Only a parked task session ends with its approval. An attached interactive session keeps its

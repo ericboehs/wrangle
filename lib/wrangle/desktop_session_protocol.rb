@@ -10,15 +10,21 @@ module Wrangle
     SOCKET_MODE = 0o600
     SOCKET_DIRECTORY_MODE = 0o700
 
+    # Creates `directory` 0700, or tightens it to 0700 when it already exists and this user owns it.
+    def self.private_directory(directory)
+      FileUtils.mkdir_p(directory, mode: SOCKET_DIRECTORY_MODE)
+      File.chmod(SOCKET_DIRECTORY_MODE, directory)
+    rescue Errno::EPERM
+      nil # Another user's directory is not ours to tighten.
+    end
+
     private
 
     # Binds the session socket owner-only. The directory is forced to 0700 when this user owns it and
     # the socket is created under a 0177 umask, so there is no window in which another uid can connect.
     # File modes do not separate processes of the same uid: any of them can still connect.
     def bind_private_socket(path)
-      directory = File.dirname(path)
-      FileUtils.mkdir_p(directory, mode: SOCKET_DIRECTORY_MODE)
-      File.chmod(SOCKET_DIRECTORY_MODE, directory) if File.owned?(directory)
+      DesktopSessionProtocol.private_directory(File.dirname(path))
       FileUtils.rm_f(path)
       previous = File.umask(0o177)
       begin

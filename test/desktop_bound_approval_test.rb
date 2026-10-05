@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "minitest/mock"
 require "socket"
 
 require_relative "test_helper"
@@ -678,6 +679,57 @@ class DesktopBoundApprovalTest < Minitest::Test
     assert_equal 1, client.call("status").dig("value", "pending_proposals")
     assert_equal "delivered", bound_call(client, approve_request(result)).dig("value", "receipt", "dispatch")
     assert @thread.join(2)
+  end
+
+  def test_decline_of_an_expired_binding_is_expired_and_resolves
+    server, result = parked_task
+    age(server, result, Wrangle::DesktopProposal::TTL + 1)
+
+    value = call(server, decline_request(result)).fetch("value")
+    assert_equal approval("approval_expired", "expired", false), value.slice("schema", "status", "reason", "retryable")
+    refute_nil @registry.released
+  end
+
+  def test_missing_proposal_id_is_unknown_and_does_not_spend
+    server, result = parked_task
+    [nil, ""].each do |id|
+      value = call(server, approve_request(result).merge("proposal_id" => id)).fetch("value")
+      assert_equal "unknown", value["reason"]
+    end
+    assert_nil @registry.released
+    assert_equal 1, status(server)["pending_proposals"]
+  end
+
+  def test_a_session_already_lost_spends_a_matching_binding_as_lost_scope
+    server, result = parked_task
+    server.instance_variable_set(:@poisoned, Wrangle::ScopeLost.new("window replaced"))
+
+    assert_equal "lost_scope", call(server, approve_request(result)).dig("value", "reason")
+    assert_nil @driver.executed
+    refute_nil @registry.released
+  end
+
+  def test_serving_requires_a_parked_approval_and_a_socket
+    error = assert_raises(ArgumentError) { seam(socket: @socket).serve_parked_approval }
+    assert_match(/No parked approval/, error.message)
+  end
+
+  def test_parked_deadline_and_expiry_tolerate_a_proposal_already_gone
+    server, result = parked_task(socket: @socket)
+    server.instance_variable_get(:@proposals).delete(result.dig("binding", "proposal_id"))
+
+    assert_operator server.send(:parked_deadline), :<=, Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    server.send(:expire_parked_approval!)
+    refute server.parked_approval?
+    assert_empty server.instance_variable_get(:@consumed)
+  end
+
+  def test_private_directory_leaves_a_directory_it_cannot_tighten
+    directory = File.join(@directory, "theirs")
+    File.stub(:chmod, ->(*) { raise Errno::EPERM }) do
+      assert_nil Wrangle::DesktopSessionProtocol.private_directory(directory)
+    end
+    assert File.directory?(directory)
   end
 
   def test_doctor_errors_are_treated_as_unlocked

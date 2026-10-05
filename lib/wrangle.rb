@@ -32,8 +32,10 @@ require_relative "wrangle/jev"
 require_relative "wrangle/action_space"
 require_relative "wrangle/decider"
 require_relative "wrangle/session_server"
+require_relative "wrangle/desktop_session_protocol"
 require_relative "wrangle/desktop_session_server"
 require_relative "wrangle/desktop_task"
+require_relative "wrangle/desktop_task_host"
 
 # Scoped computer use for macOS: one Safari window or one app window, and no more than that.
 #

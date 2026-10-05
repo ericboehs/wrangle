@@ -15,6 +15,9 @@ module Wrangle
     DEFAULT_STEPS = 8
     MAX_STEPS = 8
 
+    # The live session server, kept so an in-process caller can resolve a parked approval.
+    attr_reader :server
+
     def initialize(driver: MacOSDriver.new, provider: nil, registry: nil, log: nil)
       @driver = driver
       @provider = provider
@@ -23,8 +26,13 @@ module Wrangle
       @driver_owned = true
     end
 
+    # With `socket_path`, a consequential stop keeps this process serving that socket until the bound
+    # approval resolves or its TTL elapses; `on_ready` receives the task result once it accepts
+    # connections. Without it, the parked session stays live on `server` for an in-process caller.
+    # rubocop:disable-next Metrics/ParameterLists
     def run(app:, goal:, literals: {}, steps: DEFAULT_STEPS, min_confidence: 0.5,
-            concurrency: "exclusive", provider_options: {}, teach: false, no_skill: false)
+            concurrency: "exclusive", provider_options: {}, teach: false, no_skill: false,
+            socket_path: nil, on_ready: nil)
       app = app.to_s.strip
       goal = goal.to_s.strip
       raise ArgumentError, "A macOS application name is required" if app.empty?
@@ -38,15 +46,19 @@ module Wrangle
       window = select_window(app)
       scope = @driver.attach(window_id: window.fetch("id"), app: window.fetch("app_name"))
       log = @log || EventLog.new(session: "task-#{SecureRandom.hex(6)}")
-      server = DesktopSessionServer.new(
-        nil, { "concurrency" => concurrency }, driver: @driver, scope:, registry: @registry,
-                                               log:, provider:
+      @server = DesktopSessionServer.new(
+        socket_path, { "concurrency" => concurrency }, driver: @driver, scope:, registry: @registry,
+                                                       log:, provider:
       )
       @driver_owned = false
-      server.run_task(
+      result = @server.run_task(
         "goal" => goal, "literals" => literals, "steps" => budget,
         "min_confidence" => min_confidence, "teach" => teach, "no_skill" => no_skill
       )
+      return result unless socket_path && @server.parked_approval?
+
+      @server.serve_parked_approval(ready: -> { on_ready&.call(result) })
+      result
     ensure
       @driver.close if @driver_owned
     end

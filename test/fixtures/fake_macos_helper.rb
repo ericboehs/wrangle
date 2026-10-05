@@ -7,6 +7,8 @@ mode = ARGV.shift
 input = JSON.parse(ARGV.fetch(0, "{}"))
 operation = input["op"]
 version = mode == "protocol" ? "2.0" : "1.0"
+# "consequential" offers a Send button so a task stops for bound approval.
+control = mode == "consequential" ? "Native Send" : "Native Open"
 
 if mode == "snapshot-refusal" && operation == "snapshot"
   puts JSON.generate("version" => version, "ok" => false,
@@ -38,12 +40,12 @@ value = case operation
           { "pid" => input["pid"], "process_instance" => input["process_instance"],
             "changed" => true, "verified" => true }
         when "snapshot"
-          target = { "path" => [0], "role" => "button", "name" => "Native Open",
+          target = { "path" => [0], "role" => "button", "name" => control,
                      "operations" => { "PRESS" => "AXPress" } }
           { "snapshot_id" => "native-1", "complete" => true,
             "window" => { "id" => input["window_id"] }, "provenance" => %w[ax macos_helper_native],
             "tree" => { "role" => "window", "name" => "Fixture", "children" => [
-              { "ref_id" => "@nnative1:e1", "role" => "button", "name" => "Native Open",
+              { "ref_id" => "@nnative1:e1", "role" => "button", "name" => control,
                 "operations" => ["PRESS"], "target_key" => "native:0:button" }
             ] }, "targets" => { "@nnative1:e1" => target } }
         when "execute"
@@ -53,7 +55,7 @@ value = case operation
         end
 
 case mode
-when "driver", "protocol", "bad-dispatch", "snapshot-refusal"
+when "driver", "protocol", "bad-dispatch", "snapshot-refusal", "consequential"
   puts JSON.generate("version" => version, "ok" => true, "value" => value)
 when "refusal"
   puts JSON.generate("version" => version, "ok" => false,

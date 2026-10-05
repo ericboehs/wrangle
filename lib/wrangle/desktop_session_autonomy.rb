@@ -183,7 +183,13 @@ module Wrangle
                elsif !@provider.mutation_qualified?
                  "provider_not_qualified"
                end
-      task_result(status, **state.slice(:remaining, :actions), assessment:, pending:) if status
+      return unless status
+
+      result = task_result(status, **state.slice(:remaining, :actions), assessment:, pending:)
+      return result unless status == "approval_required"
+
+      # The proposal stays in memory, bound to this live session. Only the tool sees the binding.
+      park_approval_from_task!(result, @proposals.fetch(proposal.fetch("proposal_id")))
     end
 
     def task_receipt_result(proposal, pending, assessment, state)

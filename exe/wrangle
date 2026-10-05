@@ -31,6 +31,10 @@ module Wrangle
         wrangle doctor                    check macOS driver capabilities and permissions
         wrangle task --app APP --goal GOAL [--teach] [--no-skill]
                                           complete one bounded native desktop task (Jev by default)
+        wrangle approve --session S --proposal-id ID --scope-id ID --revision REV
+                                          deliver the one parked consequential action, once
+        wrangle decline --session S --proposal-id ID --scope-id ID --revision REV
+                                          spend the parked action without sending anything
         wrangle skills [--json]           list stored UI skills
         wrangle qualify --provider NAME   run the provider conformance suite and emit a receipt
                          [--suite PATH] [--output PATH]
@@ -76,12 +80,14 @@ module Wrangle
 
     module_function
 
+    # rubocop:disable-next Metrics/MethodLength
     def run(argv)
       command = argv.shift
       options = parse(argv)
       case command
       when "windows", "tart-observe", "displays" then public_send(command.tr("-", "_"), options)
       when "doctor", "qualify", "task", "skills" then public_send(command, options)
+      when "approve", "decline" then bound_approval(command, options)
       when "open" then start({ "url" => argv.first }, options)
       when "attach" then attach(argv.first, options)
       when "observe" then observe(options)
@@ -99,6 +105,7 @@ module Wrangle
       when "close" then close(options)
       when "__serve" then serve(argv)
       when "__serve_macos" then serve_macos(argv)
+      when "__task_park" then task_park(argv)
       when nil, "help", "-h", "--help" then puts(USAGE_TEXT) || OK
       when "version", "-v", "--version" then puts(Wrangle::VERSION) || OK
       else warn("unknown command: #{command}\n\n#{USAGE_TEXT}") || USAGE
@@ -147,6 +154,9 @@ module Wrangle
       parser.on("--text STR") { |v| options[:text] = v }
       parser.on("--operation OP") { |v| options[:operation] = v }
       parser.on("--approve") { options[:approve] = true }
+      parser.on("--proposal-id ID") { |v| options[:proposal_id] = v }
+      parser.on("--scope-id ID") { |v| options[:scope_id] = v }
+      parser.on("--revision REV") { |v| options[:revision] = v }
       parser.on("--match RE") { |v| options[:match] = v }
       parser.on("--settle S", Float) { |v| options[:settle] = v }
       parser.on("--goal STR") { |v| options[:goal] = v }
@@ -301,23 +311,60 @@ module Wrangle
       return warn("task needs --app APP and --goal GOAL") || USAGE if
         options[:app].to_s.strip.empty? || options[:goal].to_s.strip.empty?
 
-      value = DesktopTask.new.run(
-        app: options[:app], goal: options[:goal], literals: options[:literals] || {},
-        steps: options[:steps] || DesktopTask::DEFAULT_STEPS,
-        min_confidence: options[:min_confidence] || 0.5,
-        concurrency: options[:cooperative] ? "cooperative" : "exclusive",
-        provider_options: task_provider_options(options),
-        teach: options[:teach] || false, no_skill: options[:no_skill] || false
+      reply = DesktopTaskHost.run(
+        { "app" => options[:app], "goal" => options[:goal], "literals" => options[:literals] || {},
+          "steps" => options[:steps] || DesktopTask::DEFAULT_STEPS,
+          "min_confidence" => options[:min_confidence] || 0.5,
+          "concurrency" => options[:cooperative] ? "cooperative" : "exclusive",
+          "provider_options" => task_provider_options(options),
+          "teach" => options[:teach] || false, "no_skill" => options[:no_skill] || false },
+        exe: __FILE__
       )
-      return emit({ "ok" => true, "value" => value }) if options[:json]
+      return emit(reply) if options[:json]
+      return failed(reply, options) unless reply["ok"]
 
+      value = reply.fetch("value")
       puts value.fetch("message")
       puts "status   #{value.fetch("status")}"
       puts "actions  #{value.fetch("actions_taken")}"
+      puts "session  #{value.dig("binding", "session")} (approval parked; --json shows the binding)" if
+        value["binding"]
       show_skill(value)
       OK
     rescue Wrangle::Error, ArgumentError => e
       task_failure(e, options)
+    end
+
+    # The child half of `task`: owns the session, lease, and in-memory proposal.
+    def task_park(argv)
+      DesktopTaskHost.serve(argv[0], argv[1], argv[2])
+      OK
+    end
+
+    # Thin pass-through to a parked desktop session. Approve always sends the literal true; decline
+    # never sends an approve field. The session decides everything else.
+    def bound_approval(command, options)
+      binding = { proposal_id: options[:proposal_id], scope_id: options[:scope_id], revision: options[:revision] }
+      return warn("#{command} needs --proposal-id, --scope-id, and --revision") || USAGE if binding.values.any?(&:nil?)
+
+      params = command == "approve" ? binding.merge(approve: true) : binding
+      reply = client(options).call(command, **params)
+      return emit(reply) if options[:json]
+      return failed(reply, options) unless reply["ok"]
+
+      value = reply["value"]
+      action = value["receipt"] || (value if value["schema"] == "wrangle.receipt.v1")
+      return show_approval_outcome(value) unless action
+
+      return puts("declined  the parked action was spent; nothing was sent") || OK if action["reason"] == "declined"
+
+      puts receipt_summary(action)
+      action["dispatch"] == "delivered" ? OK : TERMINAL
+    end
+
+    def show_approval_outcome(value)
+      puts "approval  #{value["status"]} (#{value["reason"]})"
+      value["retryable"] ? STALE : TERMINAL
     end
 
     def task_provider_options(options)

@@ -150,6 +150,67 @@ class CliTest < Minitest::Test
     end
   end
 
+  # The real driver path: the CLI parent returns as soon as the task stops for approval, and a child
+  # process keeps the session, lease, and in-memory proposal on a socket until one bound request.
+  # rubocop:disable-next Metrics/MethodLength
+  def test_consequential_task_parks_a_child_session_until_decline
+    with_fake_commands(helper_mode: "consequential") do |env|
+      trace = File.join(env.fetch("WRANGLE_HOME"), "task-trace.jsonl")
+      File.write(trace, JSON.generate(
+        "name" => "action",
+        "answer" => {
+          "choice" => "a1", "confidence" => 0.91,
+          "probabilities" => { "a1" => 0.91, "DONE" => 0.03, "BLOCKED" => 0.03, "HANDOFF" => 0.03 }
+        }
+      ) << "\n")
+
+      out, status = run_cli(
+        "task", "--app", "Finder", "--goal", "Send the fixture", "--provider", "replay",
+        "--provider-trace", trace, "--json", env:
+      )
+      reply = JSON.parse(out)
+      assert_equal 0, status, out
+      value = reply.fetch("value")
+      assert_equal "approval_required", value["status"]
+      binding = value.fetch("binding")
+      assert_equal 300, binding["ttl_seconds"]
+      refute_includes JSON.generate(value["pending_action"]), binding["proposal_id"]
+      refute_includes out, "resume_token"
+      socket = File.join(env.fetch("WRANGLE_HOME"), "#{binding.fetch("session")}.sock")
+      assert File.socket?(socket), "the parked child serves the session socket"
+      refute_empty Dir.glob(File.join(env.fetch("WRANGLE_HOME"), "scopes", "*.json"))
+
+      args = ["--session", binding["session"], "--proposal-id", binding["proposal_id"],
+              "--scope-id", binding["scope_id"], "--revision", binding["revision"], "--json"]
+      wrong, = run_cli("decline", *args.map { |arg| arg == binding["revision"] ? "other" : arg }, env:)
+      assert_equal "unknown", JSON.parse(wrong).dig("value", "reason")
+
+      out, status = run_cli("decline", *args, env:)
+      receipt = JSON.parse(out).fetch("value")
+      assert_equal 0, status, out
+      assert_equal "declined", receipt["reason"]
+      assert_equal "spent", receipt["approval"]
+
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+      sleep 0.05 while File.exist?(socket) && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+      refute File.exist?(socket), "the parked child exits once the approval resolves"
+      assert_empty Dir.glob(File.join(env.fetch("WRANGLE_HOME"), "scopes", "*.json"))
+    end
+  end
+
+  def test_bound_approval_commands_need_the_whole_binding
+    out, status = run_cli("approve", "--session", "missing", "--proposal-id", "p")
+    assert_equal 2, status
+    assert_match(/needs --proposal-id, --scope-id, and --revision/, out)
+
+    Dir.mktmpdir("wrangle-cli") do |home|
+      out, status = run_cli("decline", "--session", "missing", "--proposal-id", "p", "--scope-id", "s",
+                            "--revision", "r", env: { "WRANGLE_HOME" => home })
+      assert_equal 5, status
+      assert_match(/No wrangle session/, out)
+    end
+  end
+
   def test_single_desktop_task_requires_a_natural_goal_and_application
     out, status = run_cli("task", "--app", "Finder", "--json")
 

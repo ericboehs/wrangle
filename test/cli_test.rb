@@ -154,7 +154,8 @@ class CliTest < Minitest::Test
   # process keeps the session, lease, and in-memory proposal on a socket until one bound request.
   # rubocop:disable-next Metrics/MethodLength
   def test_consequential_task_parks_a_child_session_until_decline
-    with_fake_commands(helper_mode: "consequential") do |env|
+    # A short home: macOS caps a Unix socket path at 104 bytes and its per-user TMPDIR is long.
+    with_fake_commands(helper_mode: "consequential", prefix: "wcli", root: ("/tmp" if File.writable?("/tmp"))) do |env|
       trace = File.join(env.fetch("WRANGLE_HOME"), "task-trace.jsonl")
       File.write(trace, JSON.generate(
         "name" => "action",
@@ -512,8 +513,8 @@ class CliTest < Minitest::Test
     ) << "\n")
   end
 
-  def with_fake_commands(helper_mode: "driver")
-    Dir.mktmpdir("wrangle-cli") do |directory|
+  def with_fake_commands(helper_mode: "driver", prefix: "wrangle-cli", root: nil)
+    Dir.mktmpdir(prefix, root) do |directory|
       macos = wrapper(directory, "macos", FAKE_MACOS, helper_mode)
       yield("WRANGLE_MACOS_HELPER" => macos, "WRANGLE_HOME" => directory)
     end

@@ -34,9 +34,11 @@ class DesktopBoundApprovalTest < Minitest::Test
   end
 
   SessionClient = Wrangle::SessionClient
+  SHORT_TMP = File.directory?("/tmp") && File.writable?("/tmp") ? "/tmp" : nil
 
   def setup
-    @directory = Dir.mktmpdir("wrangle-bound-approval")
+    # Short on purpose: macOS caps a Unix socket path at 104 bytes and its per-user TMPDIR is long.
+    @directory = Dir.mktmpdir("wba", SHORT_TMP)
     @socket = File.join(@directory, "task-fixture.sock")
     @driver = LockableDriver.new
     @driver.observations = [@driver.state("one", "Send")]
@@ -378,7 +380,7 @@ class DesktopBoundApprovalTest < Minitest::Test
     ready = Queue.new
     @thread = Thread.new { server.serve_parked_approval(ready: -> { ready << true }) }
     @thread.report_on_exception = false
-    ready.pop
+    await_ready(ready, @thread)
     client = Wrangle::SessionClient.new(@socket)
 
     refused = client.call("approve", **symbolize(approve_request(result).except("op").merge("approve" => false)))
@@ -444,7 +446,7 @@ class DesktopBoundApprovalTest < Minitest::Test
   def test_desktop_task_serves_a_parked_socket_and_calls_on_ready
     ready = Queue.new
     thread = Thread.new do
-      ready.pop
+      ready.pop(timeout: 5) || raise("the parked socket never became ready")
       client = Wrangle::SessionClient.new(@socket)
       client.call("decline", **symbolize(decline_request(@parked).except("op")))
     end
@@ -597,7 +599,7 @@ class DesktopBoundApprovalTest < Minitest::Test
     ready = Queue.new
     @thread = Thread.new { server.serve_parked_approval(ready: -> { ready << true }) }
     @thread.report_on_exception = false
-    ready.pop
+    await_ready(ready, @thread)
 
     assert_equal 0o600, File.stat(@socket).mode & 0o777
     assert_equal 0o700, File.stat(@directory).mode & 0o777
@@ -759,8 +761,17 @@ class DesktopBoundApprovalTest < Minitest::Test
     ready = Queue.new
     thread = Thread.new { server.serve_parked_approval(ready: -> { ready << true }) }
     thread.report_on_exception = false
-    ready.pop
+    await_ready(ready, thread)
     thread
+  end
+
+  # Bounded, so a socket that never binds fails the test instead of hanging the suite.
+  def await_ready(ready, thread)
+    return if ready.pop(timeout: 5)
+
+    thread.kill unless thread.join(0.1)
+    thread.value # re-raises the serve thread's own error, e.g. a socket path that is too long
+    flunk("the parked socket never became ready")
   end
 
   def bound_call(client, request) = client.call(request.fetch("op"), **symbolize(request.except("op")))

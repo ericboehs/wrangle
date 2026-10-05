@@ -67,7 +67,7 @@ class DesktopBoundApprovalTest < Minitest::Test
 
     assert_equal "approval_required", result["status"]
     binding = result.fetch("binding")
-    assert_equal %w[proposal_id revision scope_id ttl_seconds], binding.keys.sort
+    assert_equal %w[pending_summary proposal_id revision scope_id ttl_seconds], binding.keys.sort
     assert_equal "scope-1", binding["scope_id"]
     assert_equal "one", binding["revision"]
     assert_equal 300, binding["ttl_seconds"]
@@ -742,6 +742,187 @@ class DesktopBoundApprovalTest < Minitest::Test
     Thread.current[:wrangle_refuse_chmod] = nil
   end
 
+  # Probe: under the DEFAULT policy a consequential click carries a summary the person can approve.
+  def test_default_policy_send_after_typing_summarizes_the_typed_text
+    message = %(hello "team", ship it)
+    @driver.observations = [compose("r1", ""), compose("r1", ""), compose("r2", message)]
+    provider = FakeProvider.new(["a1", 0.9], ["a2", 0.9])
+    server = seam(provider:)
+    result = server.run_task("goal" => %(Type '#{message}' into Message and press Send), "steps" => 3)
+
+    assert_equal "approval_required", result["status"]
+    assert_equal({ operation: "SET_TEXT", ref: "@s:e1", text: message }, @driver.executed, "typed first")
+    summary = result.dig("binding", "pending_summary")
+    assert_equal({ "app" => "Finder", "operation" => "PRESS", "role" => "button", "label" => "Send",
+                   "typed_text" => message }, summary)
+    refute result["binding"].key?("pending_text"), "a click types nothing itself"
+    refute result["pending_action"].key?("pending_summary")
+    refute_includes JSON.generate(result.except("binding")), message
+    refute_includes JSON.generate(@log.events), message
+
+    assert_equal "delivered", call(server, approve_request(result)).dig("value", "receipt", "dispatch")
+    assert_equal({ operation: "PRESS", ref: "@s:e2", text: nil }, @driver.executed)
+  end
+
+  def test_default_policy_send_without_typing_has_null_typed_text
+    _server, result = parked_task
+
+    summary = result.dig("binding", "pending_summary")
+    assert_equal({ "app" => "Finder", "operation" => "PRESS", "role" => "button", "label" => "Send",
+                   "typed_text" => nil }, summary)
+    assert summary.key?("typed_text")
+  end
+
+  def test_default_policy_toggle_is_summarized
+    @driver.observations = [@driver.state("one", "Notify everyone", role: "checkbox", operations: ["TOGGLE"])]
+    _server, result = parked_task
+
+    assert_equal "approval_required", result["status"]
+    assert_equal({ "app" => "Finder", "operation" => "TOGGLE", "role" => "checkbox", "label" => "Notify everyone",
+                   "typed_text" => nil }, result.dig("binding", "pending_summary"))
+  end
+
+  def test_consequential_set_text_summary_carries_the_text_it_would_type
+    @driver.observations = [@driver.state("one", "Message", role: "text field", operations: ["SET_TEXT"])]
+    server = seam(provider: FakeProvider.new(["a1", 0.9]), policy: TextIsConsequential.new)
+    result = server.run_task("goal" => %(Post "ship it" in Message))
+
+    binding = result.fetch("binding")
+    assert_equal "ship it", binding["pending_text"]
+    assert_equal({ "app" => "Finder", "operation" => "SET_TEXT", "role" => "text field", "label" => "Message",
+                   "typed_text" => "ship it" }, binding["pending_summary"])
+  end
+
+  # Probe: the parked proposal can be delivered only through the bound approve.
+  def test_parked_session_refuses_execute_with_the_parked_proposal_id
+    server, result = parked_task
+    parked_id = result.dig("binding", "proposal_id")
+    reply = call(server, { "op" => "execute", "proposal_id" => parked_id, "approve" => true })
+
+    assert_parked_refusal(reply)
+    assert_nothing_changed(server)
+    assert_equal "delivered", call(server, approve_request(result)).dig("value", "receipt", "dispatch")
+  end
+
+  # Probe: a parked session cannot be used to observe, preview, and execute a brand-new Send.
+  def test_parked_session_refuses_a_fresh_observe_preview_execute
+    server, result = parked_task
+    calls_before = @driver.observed_skeletons.length
+    %w[observe drill inspect continue close bad].each do |op|
+      assert_parked_refusal(call(server, { "op" => op, "ref" => 1, "run_id" => "r" }))
+    end
+    preview = call(server, { "op" => "preview", "ref" => 1, "operation" => "PRESS" })
+    assert_parked_refusal(preview)
+    assert_parked_refusal(call(server, { "op" => "preview", "goal" => "Press Send" }))
+    assert_parked_refusal(call(server, { "op" => "execute", "proposal_id" => "anything", "approve" => true }))
+
+    assert_equal calls_before, @driver.observed_skeletons.length, "no driver call"
+    assert_nothing_changed(server)
+    assert_equal "delivered", call(server, approve_request(result)).dig("value", "receipt", "dispatch")
+  end
+
+  def test_parked_socket_refuses_other_ops_over_the_wire
+    server, result = parked_task(socket: @socket)
+    @thread = serve_in_thread(server)
+    client = SessionClient.new(@socket)
+
+    assert_parked_refusal(client.call("observe"))
+    assert_parked_refusal(client.call("execute", proposal_id: result.dig("binding", "proposal_id"), approve: true))
+    assert_equal 1, client.call("status").dig("value", "pending_proposals")
+    refute @thread.join(0.1)
+    assert_nil @driver.executed
+    assert_equal "delivered", bound_call(client, approve_request(result)).dig("value", "receipt", "dispatch")
+    assert @thread.join(2)
+  end
+
+  def test_interactive_sessions_keep_the_full_op_set
+    @driver.observations = [@driver.state("one", "Open")]
+    server = seam
+    assert server.send(:dispatch, "op" => "observe")["ok"]
+    proposal = server.send(:dispatch, "op" => "preview", "ref" => 1).fetch("value")
+    reply = server.send(:dispatch, "op" => "execute", "proposal_id" => proposal["proposal_id"])
+    assert_equal "delivered", reply.dig("value", "dispatch")
+  end
+
+  def test_silent_client_is_dropped_at_the_read_deadline
+    server, result = parked_task(socket: @socket)
+    server.instance_variable_set(:@read_timeout, 0.2)
+    @thread = serve_in_thread(server)
+    silent = UNIXSocket.new(@socket)
+
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    assert silent.wait_readable(3), "the server answers a silent client by closing it"
+    assert_nil silent.gets
+    assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 2
+    assert_nil @registry.released
+    assert_equal "declined", bound_call(SessionClient.new(@socket), decline_request(result)).dig("value", "reason")
+    assert @thread.join(2)
+  ensure
+    silent&.close
+  end
+
+  def test_trickling_or_oversized_requests_are_dropped
+    server, result = parked_task(socket: @socket)
+    server.instance_variable_set(:@read_timeout, 0.3)
+    @thread = serve_in_thread(server)
+
+    trickle = UNIXSocket.new(@socket)
+    trickle.write('{"op":"sta')
+    assert trickle.wait_readable(3)
+    assert_nil trickle.gets
+    huge = UNIXSocket.new(@socket)
+    begin
+      huge.write("x" * (Wrangle::DesktopSessionProtocol::MAX_REQUEST_BYTES + 10))
+    rescue Errno::EPIPE, Errno::ECONNRESET
+      nil
+    end
+    assert huge.wait_readable(3)
+    assert_nil huge.gets
+    assert_equal 1, SessionClient.new(@socket).call("status").dig("value", "pending_proposals")
+    bound_call(SessionClient.new(@socket), decline_request(result))
+    assert @thread.join(2)
+  ensure
+    trickle&.close
+    huge&.close
+  end
+
+  def test_half_sent_and_non_object_requests_change_nothing
+    server, result = parked_task(socket: @socket)
+    @thread = serve_in_thread(server)
+
+    half = UNIXSocket.new(@socket)
+    half.write('{"op":"approve"')
+    half.close_write
+    assert half.wait_readable(3)
+    assert_nil half.gets
+    array = UNIXSocket.new(@socket)
+    array.puts("[1, 2]")
+    assert_parked_refusal(JSON.parse(array.gets))
+    assert_equal "ArgumentError", seam.send(:dispatch, seam.send(:parse, "[1]\n"))["class"]
+
+    assert_nil @driver.executed
+    assert_equal 1, SessionClient.new(@socket).call("status").dig("value", "pending_proposals")
+    bound_call(SessionClient.new(@socket), decline_request(result))
+    assert @thread.join(2)
+  ensure
+    half&.close
+    array&.close
+  end
+
+  def test_silent_client_cannot_hold_the_session_past_the_ttl
+    server, result = parked_task(socket: @socket)
+    age(server, result, Wrangle::DesktopProposal::TTL - 0.4)
+    @thread = serve_in_thread(server)
+    silent = UNIXSocket.new(@socket)
+
+    assert @thread.join(2), "the read deadline is capped by the TTL (default read timeout is 5s)"
+    refute File.exist?(@socket)
+    refute_nil @registry.released
+    assert_nil @driver.executed
+  ensure
+    silent&.close
+  end
+
   def test_doctor_errors_are_treated_as_unlocked
     server, result = parked_task
     @driver.define_singleton_method(:doctor) { raise Wrangle::DriverUnavailable, "helper gone" }
@@ -834,6 +1015,33 @@ class DesktopBoundApprovalTest < Minitest::Test
     thread.kill unless thread.join(0.1)
     thread.value # re-raises the serve thread's own error, e.g. a socket path that is too long
     flunk("the parked socket never became ready")
+  end
+
+  def assert_parked_refusal(reply)
+    refute reply["ok"], reply.inspect
+    assert_equal "ParkedSession", reply["class"]
+    assert_equal %w[approve decline status], reply["allowed_ops"]
+    refute reply["terminal"]
+    refute reply["retryable"]
+  end
+
+  def assert_nothing_changed(server)
+    assert_nil @driver.executed, "nothing sent"
+    assert_nil @registry.dispatch_started, "no marker"
+    assert_nil @registry.released, "lease untouched"
+    refute @driver.closed
+    assert server.parked_approval?
+    assert_equal 1, status(server)["pending_proposals"]
+    refute status(server)["poisoned"]
+  end
+
+  # A message field and a Send button; `typed` is what the field shows.
+  def compose(revision, typed)
+    state = @driver.state(revision, "Message", role: "text field", value: typed, operations: ["SET_TEXT"])
+    send = { "ref" => "@s:e2", "role" => "button", "label" => "Send", "value" => nil, "states" => ["enabled"],
+             "operations" => ["PRESS"] }
+    state.merge("candidates" => state["candidates"] + [send],
+                "coverage" => state["coverage"].merge("candidate_count" => 2))
   end
 
   def bound_call(client, request) = client.call(request.fetch("op"), **symbolize(request.except("op")))

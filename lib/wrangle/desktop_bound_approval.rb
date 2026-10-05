@@ -348,8 +348,22 @@ module Wrangle
         "session" => parked_session_name,
         # Tool-only: the exact string the driver will type (the stored proposal text, chosen from the
         # literals or DesktopDecider.quoted_spans). pending_action keeps only source and characters.
-        "pending_text" => proposal["text"]
+        "pending_text" => proposal["text"],
+        "pending_summary" => pending_summary(proposal)
       }.compact
+    end
+
+    # Tool-only, on every consequential binding, so the person can see what they approve even when
+    # the action itself types nothing. typed_text is the exact text this action would type; failing
+    # that, the text this task most recently delivered by SET_TEXT in this window (what a Send would
+    # send); otherwise nil. Exact strings only, never truncated or redacted; never logged.
+    def pending_summary(proposal)
+      candidate = proposal.fetch("candidate")
+      {
+        "app" => @scope.app, "operation" => proposal["operation"],
+        "role" => candidate["role"], "label" => candidate["label"],
+        "typed_text" => proposal["text"] || Array(@task_typed).last
+      }
     end
 
     def parked_session_name

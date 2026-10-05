@@ -46,6 +46,7 @@ module Wrangle
 
     def prepare_task_context(request)
       @task_drills = 0
+      @task_typed = []
       @task_goal = request.fetch("goal")
       @task_text_values = Array(request["literals"]&.values) + quoted_task_spans(@task_goal)
       observe unless @observation
@@ -163,7 +164,7 @@ module Wrangle
       halted = task_preflight_result(proposal, pending, assessment, state)
       return halted if halted
 
-      task_receipt_result(proposal, pending, assessment, state)
+      task_receipt_result(proposal, pending, assessment, state, typed: choice.text)
     end
 
     def escalate_partial_task_observation?
@@ -193,11 +194,13 @@ module Wrangle
       park_approval_from_task!(result, @proposals.fetch(proposal.fetch("proposal_id")))
     end
 
-    def task_receipt_result(proposal, pending, assessment, state)
+    def task_receipt_result(proposal, pending, assessment, state, typed: nil)
       action_receipt = execute("proposal_id" => proposal.fetch("proposal_id"))
       state[:actions] << pending.merge(action_receipt.slice("dispatch", "effect", "reason", "terminal"))
       dispatch = action_receipt.fetch("dispatch")
       return task_result(dispatch, **state.slice(:remaining, :actions), assessment:) unless dispatch == "delivered"
+
+      remember_typed_text(pending, typed)
 
       state[:remaining] -= 1
       state[:history] << task_history_entry(pending, action_receipt["effect"])
@@ -226,6 +229,14 @@ module Wrangle
       stored = @proposals.fetch(proposal.fetch("proposal_id"))
       stored["provider"] = { "name" => choice.provider, "model" => choice.model, "qualified" => qualified }
       proposal["policy"] = proposal.fetch("policy").merge("provider_qualified" => qualified)
+    end
+
+    # In memory only (never logged): what this task has already typed, so a later consequential click
+    # can show the person the text it would send.
+    def remember_typed_text(pending, typed)
+      return unless typed && pending["operation"] == "SET_TEXT"
+
+      @task_typed << typed
     end
 
     def task_history_entry(action, effect)

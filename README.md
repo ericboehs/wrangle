@@ -267,13 +267,20 @@ tool-facing `binding` that the `computer` tool strips before the agent sees it:
 
 ```json
 "binding": { "proposal_id": "…", "scope_id": "…", "revision": "…", "ttl_seconds": 300,
-             "session": "task-…", "pending_text": "exact text the driver will type" }
+             "session": "task-…", "pending_text": "exact text the driver will type",
+             "pending_summary": { "app": "Messages", "operation": "PRESS", "role": "button",
+                                  "label": "Send", "typed_text": "text this task typed earlier" } }
 ```
 
-`pending_text` appears only for typed text and is exactly the stored proposal text (an explicit literal
-or an exact quoted goal span), so the person approves the bytes that will be typed. A child process
-keeps the session, exclusive lease, and in-memory proposal live on the session socket for at most
-300 seconds. One bound request resolves it:
+`pending_summary` is on every consequential binding so the person can see what they are approving.
+Its `typed_text` holds the exact text the action would type, or else the text this task most recently
+typed in the window (for example, the message a Send would send), or else `null`. `pending_text`
+appears only when the action itself types (SET_TEXT). It is exactly the stored proposal text: an
+explicit literal or an exact quoted goal span. A child process keeps the session, the exclusive lease,
+and the in-memory proposal live on the session socket for at most 300 seconds. While parked, that
+socket accepts only `approve`, `decline`, and the read-only `status`. Every other op gets a
+`ParkedSession` refusal and changes nothing. A client must send its request line within 5 seconds,
+and never later than the TTL. One bound request resolves it:
 
 ```bash
 wrangle approve --session S --proposal-id ID --scope-id ID --revision REV --json   # sends approve: true

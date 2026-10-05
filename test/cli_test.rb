@@ -188,6 +188,12 @@ class CliTest < Minitest::Test
 
       args = ["--session", binding["session"], "--proposal-id", binding["proposal_id"],
               "--scope-id", binding["scope_id"], "--revision", binding["revision"], "--json"]
+      assert_equal "PRESS", binding.dig("pending_summary", "operation")
+      assert_nil binding.dig("pending_summary", "typed_text")
+      refute_includes JSON.generate(value["pending_action"]), "pending_summary"
+      parked, = run_cli("observe", "--session", binding["session"], "--json", env:)
+      assert_equal "ParkedSession", JSON.parse(parked)["class"]
+
       wrong, = run_cli("decline", *args.map { |arg| arg == binding["revision"] ? "other" : arg }, env:)
       assert_equal "unknown", JSON.parse(wrong).dig("value", "reason")
 

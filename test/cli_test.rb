@@ -235,6 +235,19 @@ class CliTest < Minitest::Test
     end
   end
 
+  def test_a_session_that_dies_while_starting_fails_fast_instead_of_waiting_out_the_deadline
+    with_fake_commands(helper_mode: "refusal") do |env|
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      out, status = run_cli("attach", "w-1", "--app", "Finder", "--session", "dies-starting", env:)
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+      refute_equal 0, status
+      assert_match(/session exited before it started/, out)
+      assert_match(/Process changed/, out)
+      assert_operator elapsed, :<, 10, "waited #{elapsed.round(1)}s for a server that had already exited"
+    end
+  end
+
   def test_qualification_emits_an_owner_only_replay_receipt
     Dir.mktmpdir("wrangle-qualification") do |directory|
       cases = Wrangle::ProviderQualification.load

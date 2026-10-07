@@ -553,15 +553,18 @@ module Wrangle
       command = DESKTOP_DRIVERS.include?(target["driver"]) ? "__serve_macos" : "__serve"
       pid = Process.spawn(RbConfig.ruby, __FILE__, command, socket, JSON.generate(target),
                           out: log, err: log, pgroup: true)
-      Process.detach(pid)
+      server = Process.detach(pid)
       File.write("#{socket}.pid", "#{pid}\n", mode: "w", perm: 0o600)
-      await(socket, log)
+      await(socket, log, server)
     end
 
-    def await(socket, log)
+    # A server that dies while starting will never answer, so stop waiting the moment it exits
+    # instead of sitting out the whole deadline and looking like a hang.
+    def await(socket, log, server)
       probe = SessionClient.new(socket)
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 30
       until probe.running?
+        raise Wrangle::Error, "The session exited before it started. Last output:\n#{tail(log)}" unless server.alive?
         if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
           raise Wrangle::Error, "The session did not start. Last output:\n#{tail(log)}"
         end

@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+- `open` works from a Background launchd session, such as a tmux server started outside the login
+  session. NSWorkspace sees no GUI apps there. The bridge used to throw on a nil frontmost
+  application after placing the window (a JXA nil is truthy), then refuse with
+  `safari_not_running`. It now checks nil properly, never fails `open` over focus restore, and asks
+  System Events for Safari when NSWorkspace doesn't list it (#6).
+- The CLI stops waiting as soon as a session server exits during startup and reports its log
+  ("The session exited before it started"). It used to sit out the full 30-second deadline.
+
 ## [0.3.0] - 2026-10-02
 
 - UI skills: `wrangle run` and `wrangle task` apply a matching procedure from

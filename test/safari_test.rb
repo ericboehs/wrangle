@@ -384,6 +384,20 @@ class SafariTest < Minitest::Test
     assert_empty traced("close")
   end
 
+  # The bridge waits for the new window and then for its page, so its reply can take longer than the
+  # page budget alone. Giving up at that budget left a window open that no session knew the id of.
+  def test_open_waits_out_a_reply_slower_than_the_page_budget
+    active = bridge(slow_on: "open", slow_seconds: 0.4)
+    session = track(Wrangle::Safari.new(url: FIXTURE_URL, display: 1, bridge: active, load_timeout: 0.1,
+                                        timing: @clock))
+
+    assert_predicate session, :owned?
+    assert_kind_of Integer, session.window_id
+    sent = traced("open").first
+    assert_in_delta 0.1, sent["load_timeout"]
+    refute sent.key?("timeout"), "the reply deadline is the caller's, not a page budget for the bridge"
+  end
+
   def test_attach_takes_a_block_too_and_hands_back_a_window_it_does_not_own
     windows = [{ url: FIXTURE_URL, window_id: 4242, tabs: 5 }]
     handled = nil

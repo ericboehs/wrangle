@@ -16,6 +16,10 @@ module Wrangle
   class Safari
     MAX_TEXT = 2000
     SETTLE_SECONDS = 5
+    # How long the bridge gives Safari to show a new window (NEW_WINDOW_SECONDS in bridge.js), and
+    # time to place it, hand focus back, and read where it landed. Both come on top of the page wait.
+    NEW_WINDOW_SECONDS = 10
+    OPEN_SLACK_SECONDS = 5
     ACTION_KINDS = %w[click fill select scroll wait].freeze
     BLOCKED = {
       "target" => "Target is gone, disabled, or no longer visible",
@@ -315,8 +319,11 @@ module Wrangle
     end
 
     def open_window(url, display, bounds, restore_focus, load_timeout)
-      @bridge.request("open", url: url, display: display, bounds: bounds,
-                              restore_focus: restore_focus, timeout: load_timeout)
+      # The reply can take the window wait and the page wait together. Giving up sooner abandons a
+      # window the bridge is about to hand back, and no session would ever own or close it.
+      @bridge.request("open", url: url, display: display, bounds: bounds, restore_focus: restore_focus,
+                              load_timeout: load_timeout,
+                              timeout: load_timeout + NEW_WINDOW_SECONDS + OPEN_SLACK_SECONDS)
     end
 
     def attach_window(window_id, url, display, bounds)

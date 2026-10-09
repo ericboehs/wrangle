@@ -386,6 +386,9 @@ $stdin.each_line do |line|
   puts JSON.generate({ "id" => request["id"] - 1, "ok" => true, "late" => true }) if op == config["late_reply_on"]
   next if op == config["hang_on"]
 
+  # An answer that comes, but later than a caller in a hurry would wait for it.
+  sleep(config["slow_seconds"].to_f) if op == config["slow_on"]
+
   if op == config["garbage_on"]
     puts "this is not json"
     next

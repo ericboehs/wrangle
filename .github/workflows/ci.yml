@@ -14,8 +14,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The floor the gemspec claims, and the current release. A claim nobody tests is a guess.
-        ruby: ["3.2", "3.4"]
+        # The floor the gemspec claims, the last 3.x, and the current release, which is what wrangle
+        # actually runs on day to day. A claim nobody tests is a guess.
+        ruby: ["3.2", "3.4", "4.0"]
 
     steps:
       - uses: actions/checkout@v5

@@ -345,6 +345,30 @@ class SessionServerTest < Minitest::Test
     refute_path_exists @socket
   end
 
+  # The other way out: once the socket file is gone, nobody can send `close`, so the server must
+  # notice on its own instead of waiting in accept forever.
+  def test_a_server_nobody_can_reach_leaves
+    server = Wrangle::SessionServer.new(@socket, { "socket_check" => 0.01 }, session: dedicated, **timing)
+    @thread = Thread.new { server.run }
+    @thread.report_on_exception = false
+    sleep 0.02 until File.socket?(@socket)
+
+    File.delete(@socket)
+
+    assert @thread.join(2), "the server kept waiting for a client that can never connect"
+  end
+
+  # A server that fails before it binds has no socket to watch, but still clears the files the CLI
+  # wrote for it, so the next caller does not wait on a session that never started.
+  def test_a_server_that_fails_to_start_clears_its_files
+    File.write("#{@socket}.pid", "123\n")
+    server = Wrangle::SessionServer.new(@socket, { "backend" => "mcp", "window_id" => 1 })
+
+    assert_raises(ArgumentError) { server.run }
+    refute_path_exists @socket
+    refute_path_exists "#{@socket}.pid"
+  end
+
   # --- the client side ---------------------------------------------------------------------------
 
   def test_a_server_that_hangs_up_without_replying_is_reported_not_silently_nil

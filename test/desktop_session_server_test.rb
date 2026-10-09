@@ -176,6 +176,32 @@ class DesktopSessionServerTest < Minitest::Test
     refute File.exist?(@socket)
   end
 
+  # A server whose socket file is gone can never be reached again, so it leaves and releases what it
+  # held instead of waiting in accept forever.
+  def test_leaves_and_releases_once_its_socket_file_is_deleted
+    serving("socket_check" => 0.01)
+
+    File.delete(@socket)
+
+    assert @thread.join(2), "the server kept waiting for a client that can never connect"
+    assert @driver.closed
+    refute_nil @registry.released
+  end
+
+  # Leaving because a newer server took the path must not delete that server's socket or pid file.
+  def test_leaving_spares_a_successors_socket_and_pid_file
+    serving("socket_check" => 0.01)
+    File.delete(@socket)
+    successor = UNIXServer.new(@socket)
+    File.write("#{@socket}.pid", "#{Process.pid + 1}\n")
+
+    assert @thread.join(2), "the server kept waiting after another took its path"
+    assert File.socket?(@socket)
+    assert_path_exists "#{@socket}.pid"
+  ensure
+    successor&.close
+  end
+
   def test_reports_candidate_deltas_without_literal_values
     @driver.observations = [@driver.state("one", "Open"), @driver.state("two", "Close")]
     client = serving
@@ -1342,9 +1368,9 @@ class DesktopSessionServerTest < Minitest::Test
     )
   end
 
-  def serving
+  def serving(options = {})
     server = Wrangle::DesktopSessionServer.new(
-      @socket, {}, driver: @driver, scope: self.class.scope, registry: @registry, log: @log
+      @socket, options, driver: @driver, scope: self.class.scope, registry: @registry, log: @log
     )
     @thread = Thread.new { server.run }
     @thread.report_on_exception = false

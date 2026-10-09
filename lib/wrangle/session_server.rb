@@ -7,6 +7,7 @@ require "socket"
 require_relative "run_loop"
 require_relative "safari"
 require_relative "skill_run"
+require_relative "socket_watch"
 require_relative "timing"
 
 module Wrangle
@@ -54,7 +55,8 @@ module Wrangle
       FileUtils.mkdir_p(File.dirname(@socket_path))
       FileUtils.rm_f(@socket_path)
       @session ||= start_session
-      serve(UNIXServer.new(@socket_path))
+      @watch = SocketWatch.new(@socket_path, interval: @options.fetch("socket_check", SocketWatch::INTERVAL))
+      serve
     ensure
       shutdown
     end
@@ -192,10 +194,8 @@ module Wrangle
       end
     end
 
-    def serve(server)
-      File.chmod(0o600, @socket_path)
-      loop do
-        client = server.accept
+    def serve
+      while (client = @watch.accept)
         line = client.gets
         next client.close unless line
 
@@ -430,6 +430,7 @@ module Wrangle
         nil # A poisoned session refuses to close its window. That refusal is the correct outcome.
       end
       return unless @socket_path
+      return @watch.release if @watch
 
       FileUtils.rm_f(@socket_path)
       FileUtils.rm_f("#{@socket_path}.pid")

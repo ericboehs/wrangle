@@ -442,7 +442,12 @@ class CliTest < Minitest::Test
   def with_fake_commands(helper_mode: "driver")
     Dir.mktmpdir("wrangle-cli") do |directory|
       macos = wrapper(directory, "macos", FAKE_MACOS, helper_mode)
-      yield("WRANGLE_MACOS_HELPER" => macos, "WRANGLE_HOME" => directory)
+      env = { "WRANGLE_MACOS_HELPER" => macos, "WRANGLE_HOME" => directory }
+      begin
+        yield(env)
+      ensure
+        close_sessions(env)
+      end
     end
   end
 
@@ -450,7 +455,21 @@ class CliTest < Minitest::Test
     Dir.mktmpdir("wrangle-tart-cli") do |directory|
       tart = wrapper(directory, "tart", FAKE_TART, nil)
       helper = wrapper(directory, "guest-helper", FAKE_MACOS, "driver")
-      yield({ "WRANGLE_TART" => tart, "WRANGLE_HOME" => directory }, helper)
+      env = { "WRANGLE_TART" => tart, "WRANGLE_HOME" => directory }
+      begin
+        yield(env, helper)
+      ensure
+        close_sessions(env)
+      end
+    end
+  end
+
+  # A session server outlives the CLI call that started it. A test that fails before its own
+  # `close` would leave the server running after mktmpdir deletes its socket, so close whatever
+  # is still listening.
+  def close_sessions(env)
+    Dir.glob(File.join(env.fetch("WRANGLE_HOME"), "*.sock")).each do |socket|
+      run_cli("close", "--session", File.basename(socket, ".sock"), env:)
     end
   end
 

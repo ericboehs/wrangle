@@ -15,6 +15,7 @@ require_relative "macos_driver"
 require_relative "provider_factory"
 require_relative "scope_registry"
 require_relative "session_server"
+require_relative "socket_watch"
 require_relative "tart_guest_driver"
 
 module Wrangle
@@ -53,7 +54,8 @@ module Wrangle
       FileUtils.mkdir_p(File.dirname(@socket_path))
       FileUtils.rm_f(@socket_path)
       start_runtime(log_session: File.basename(@socket_path, ".sock"))
-      serve(UNIXServer.new(@socket_path))
+      @watch = SocketWatch.new(@socket_path, interval: @options.fetch("socket_check", SocketWatch::INTERVAL))
+      serve
     ensure
       shutdown
     end
@@ -91,10 +93,8 @@ module Wrangle
       @guest_driver_class.new(vm_name: @options.fetch("vm"), guest_app: @options.fetch("app"), guest_helper: helper)
     end
 
-    def serve(server)
-      File.chmod(0o600, @socket_path)
-      loop do
-        client = server.accept
+    def serve
+      while (client = @watch.accept)
         line = client.gets
         next client.close unless line
 
@@ -103,8 +103,6 @@ module Wrangle
         client.close
         break if request["op"] == "close"
       end
-    ensure
-      server.close
     end
 
     def parse(line)
@@ -366,6 +364,7 @@ module Wrangle
       @registry&.release(@lease)
       @driver&.close
       return unless @socket_path
+      return @watch.release if @watch
 
       FileUtils.rm_f(@socket_path)
       FileUtils.rm_f("#{@socket_path}.pid")

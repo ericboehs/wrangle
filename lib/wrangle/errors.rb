@@ -70,6 +70,9 @@ module Wrangle
   # A decision no longer refers to the observed page. Observe again before deciding again.
   class StalePage < Error; end
 
+  # A session server exited, or stalled past any legitimate start, before it began answering.
+  class SessionStartError < Error; end
+
   # Raised when the decision service is unusable: unreachable, slow, or answering with something it
   # was never offered. A bad answer is a refusal, not a fallback to guessing.
   # A vendor-neutral decision provider failed negotiation or returned an invalid choice.

@@ -439,8 +439,27 @@ module Wrangle
 
   # Talks to a SessionServer over its socket. One request, one reply, one connection.
   class SessionClient
+    START_POLL = 0.1
+
     def initialize(socket_path)
       @socket_path = socket_path
+    end
+
+    # Wait for a server that was just spawned to start answering. A server binds its socket only once
+    # its window is open, so a slow start is not a failed one. A server that has exited never will
+    # answer, so it is reported the moment it is gone instead of at the deadline. `server` is the
+    # Process::Waiter that Process.detach returned for it.
+    def await_start(server, within:)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + within
+      until running?
+        raise SessionStartError, "The session exited before it started (#{ending(server.value)})" unless server.alive?
+        if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+          raise SessionStartError, "The session did not start within #{within} seconds, " \
+                                   "and its server (pid #{server.pid}) is still running"
+        end
+
+        sleep START_POLL
+      end
     end
 
     def running?
@@ -468,6 +487,12 @@ module Wrangle
       raise BridgeError, "No wrangle session at #{@socket_path}. Start one with `wrangle open <url>`."
     ensure
       socket&.close
+    end
+
+    private
+
+    def ending(status)
+      status.signaled? ? "killed by signal #{status.termsig}" : "exit status #{status.exitstatus}"
     end
   end
 end

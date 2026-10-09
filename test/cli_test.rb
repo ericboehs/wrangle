@@ -220,6 +220,21 @@ class CliTest < Minitest::Test
     end
   end
 
+  # The server fails before it binds its socket. Its log already says why, so the CLI should say so
+  # as soon as the server is gone, not after waiting out the startup deadline.
+  def test_attach_reports_a_server_that_died_starting_without_waiting_it_out
+    with_fake_commands do |env|
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      out, status = run_cli("attach", "w-404", "--app", "Finder", "--session", "died-starting", env:)
+
+      assert_equal 5, status
+      assert_match(/exited before it started \(exit status 5\)/, out)
+      assert_match(/ScopeLost: Window "w-404" is not a visible Finder window/, out)
+      assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 20
+      refute File.exist?(File.join(env.fetch("WRANGLE_HOME"), "died-starting.sock"))
+    end
+  end
+
   def test_failed_desktop_attach_reports_json_and_releases_the_scope
     with_fake_commands(helper_mode: "snapshot-refusal") do |env|
       out, status = run_cli("attach", "w-1", "--app", "Finder", "--session", "failed-attach", "--json", env:)

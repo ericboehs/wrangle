@@ -547,27 +547,29 @@ module Wrangle
       end
     end
 
+    # How long `open` and `attach` wait for a live server to start answering. A server binds its
+    # socket only once its window is open. The slowest start is the MCP backend's: a 25s handshake,
+    # an open that navigates and installs the page runtime, and a verified install that can run,
+    # reinstall, and run again at 30s apiece, about three minutes in all. JXA tops out near 100s and
+    # a desktop attach near 90s. A server that exits is reported at once, so this bounds only a live
+    # one that is stuck.
+    STARTUP_SECONDS = 240
+
     def spawn_server(socket, target)
       log = File.join(File.dirname(socket), "#{File.basename(socket, ".sock")}.log")
       FileUtils.mkdir_p(File.dirname(socket))
       command = DESKTOP_DRIVERS.include?(target["driver"]) ? "__serve_macos" : "__serve"
       pid = Process.spawn(RbConfig.ruby, __FILE__, command, socket, JSON.generate(target),
                           out: log, err: log, pgroup: true)
-      Process.detach(pid)
+      server = Process.detach(pid)
       File.write("#{socket}.pid", "#{pid}\n", mode: "w", perm: 0o600)
-      await(socket, log)
+      await(socket, log, server)
     end
 
-    def await(socket, log)
-      probe = SessionClient.new(socket)
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 30
-      until probe.running?
-        if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
-          raise Wrangle::Error, "The session did not start. Last output:\n#{tail(log)}"
-        end
-
-        sleep 0.1
-      end
+    def await(socket, log, server)
+      SessionClient.new(socket).await_start(server, within: STARTUP_SECONDS)
+    rescue SessionStartError => e
+      raise SessionStartError, "#{e.message}. Last output:\n#{tail(log)}"
     end
 
     def tail(log) = File.exist?(log) ? File.readlines(log).last(12).join : "(no output)"

@@ -371,6 +371,54 @@ class SessionServerTest < Minitest::Test
 
   # --- the client side ---------------------------------------------------------------------------
 
+  def test_awaiting_a_start_returns_once_the_server_answers
+    client = serving
+
+    assert_nil client.await_start(@thread, within: 5)
+  end
+
+  # A server that has exited will never answer, and waiting out the deadline for it only delays the
+  # error that its log already holds.
+  def test_awaiting_a_server_that_exited_says_so_at_once
+    server = Process.detach(Process.spawn(RbConfig.ruby, "--disable-gems", "-e", "exit 5"))
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+    error = assert_raises(Wrangle::SessionStartError) do
+      Wrangle::SessionClient.new(@socket).await_start(server, within: 60)
+    end
+
+    assert_match(/exited before it started \(exit status 5\)/, error.message)
+    assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 10
+  end
+
+  def test_awaiting_a_server_that_was_killed_names_the_signal
+    pid = Process.spawn("sleep", "30")
+    server = Process.detach(pid)
+    Process.kill("TERM", pid)
+    server.join(5)
+
+    error = assert_raises(Wrangle::SessionStartError) do
+      Wrangle::SessionClient.new(@socket).await_start(server, within: 60)
+    end
+
+    assert_match(/killed by signal #{Signal.list.fetch("TERM")}/, error.message)
+  end
+
+  # Alive but silent past any legitimate start means stuck. Say which process is still holding on.
+  def test_awaiting_a_live_server_that_never_listens_stops_at_the_deadline
+    pid = Process.spawn("sleep", "30")
+    server = Process.detach(pid)
+
+    error = assert_raises(Wrangle::SessionStartError) do
+      Wrangle::SessionClient.new(@socket).await_start(server, within: 0.2)
+    end
+
+    assert_match(/did not start within 0.2 seconds, and its server \(pid #{pid}\) is still running/, error.message)
+  ensure
+    Process.kill("KILL", pid) if pid
+    server&.join(5)
+  end
+
   def test_a_server_that_hangs_up_without_replying_is_reported_not_silently_nil
     listener = UNIXServer.new(@socket)
     # Reads the request before hanging up. Closing without reading is a different failure — the write

@@ -169,7 +169,11 @@ wrangle displays            # screen geometry for --display
 - `wrangle open URL` creates a window Wrangle owns and will close.
 - `wrangle attach WINDOW_ID` takes over a window the user already has open. **Ask first.** Wrangle
   never closes or navigates an attached window, but it will scroll and click in it.
-- Use `--display 1` (a second monitor) when available so you are not covering the user's work.
+- Park new windows on the left half of the second monitor: `wrangle open URL --display 1 --side left`.
+  Do not use `--side right` or display 0 unless the user asks.
+- If `wrangle displays` shows no second monitor, say so and ask rather than covering the main display.
+- Placement applies to `wrangle open` only. Desktop `wrangle task` attaches to an existing app window
+  and does not place one.
 
 ## When something fails
 
